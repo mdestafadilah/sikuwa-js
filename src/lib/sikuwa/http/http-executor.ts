@@ -192,10 +192,22 @@ export class HttpExecutor {
       return new HttpResponse(0, null, message, timedOut);
     }
 
+    let bytes: Uint8Array;
     let text: string;
 
     try {
-      text = await response.text();
+      // Body dibaca sebagai byte mentah lebih dulu, lalu diterjemahkan sendiri
+      // — bukan lewat `response.text()`.
+      //
+      // Alasannya bukan efisiensi (`text()` juga menampung seluruh body di
+      // memori sebelum mendecode), melainkan karena `HttpResponse.bytes` hanya
+      // berguna kalau isinya byte yang benar-benar dikirim server. Body respons
+      // cuma bisa dikonsumsi sekali, jadi tidak ada cara membaca teks dan byte
+      // secara terpisah: salah satunya harus diturunkan dari yang lain, dan
+      // arah yang benar adalah byte → teks. Sebaliknya, byte yang sudah
+      // melewati decoder UTF-8 tidak bisa dipulihkan.
+      bytes = new Uint8Array(await response.arrayBuffer());
+      text = UTF8.decode(bytes);
     } catch (error) {
       return new HttpResponse(
         response.status,
@@ -212,9 +224,24 @@ export class HttpExecutor {
       // Diambil di sini karena inilah satu-satunya titik yang masih memegang
       // objek respons; setelah ini provider hanya melihat HttpResponse.
       response.headers.get('Retry-After'),
+      // Body kosong dilaporkan sebagai null, bukan byte sepanjang nol: tidak
+      // ada yang bisa dibaca darinya, dan `body === ''` sudah mengatakan hal
+      // yang sama.
+      bytes.length === 0 ? null : bytes,
     );
   }
 }
+
+/**
+ * Decoder UTF-8 bersama untuk seluruh request.
+ *
+ * Boleh dipakai ulang: `TextDecoder` hanya menyimpan keadaan antar-panggilan
+ * bila diminta `{stream: true}`, dan di sini tidak pernah. Perilakunya sama
+ * persis dengan `response.text()` bawaan runtime — byte di luar UTF-8 menjadi
+ * U+FFFD, dan BOM di awal body dibuang — jadi body JSON dari ketujuh gateway
+ * tidak berubah sedikit pun.
+ */
+const UTF8 = new TextDecoder();
 
 /**
  * `http_build_query()` PHP: form-encoded, spasi menjadi `+`.

@@ -7,6 +7,9 @@ import { WwebjsSession } from './wwebjs-session';
 /** Sebutan wwebjs saat QR-nya sudah dipindai. */
 const ALREADY_SCANNED = 'already scanned';
 
+/** Byte kosong, dipakai ulang supaya `fromImage(null)` tidak mengalokasi. */
+const EMPTY = new Uint8Array(0);
+
 /**
  * QR session wwebjs — menormalkan balasan `GET /session/qr/{sessionId}/image`.
  *
@@ -22,15 +25,19 @@ export class WwebjsShowQr {
    * Base64 dilakukan di sini, bukan diserahkan pemanggil: `Session.qr`
    * berjanji selalu berupa data URI penuh.
    *
-   * @param png Isi body respons apa adanya dari `HttpResponse`
+   * @param png Byte PNG apa adanya dari `HttpResponse.bytes` — **bukan**
+   *            `HttpResponse.body`. `body` sudah melewati decoder UTF-8, dan
+   *            byte di luar UTF-8 (mis. `0x89` di header PNG) menjadi U+FFFD
+   *            sebelum sempat di-base64. Null dan byte kosong sama-sama
+   *            menghasilkan data URI kosong, seperti `base64_encode('')` PHP.
    */
-  static fromImage(png: string, sessionId: string): Session {
+  static fromImage(png: Uint8Array | null, sessionId: string): Session {
     return new Session({
       provider: WWEBJS_NAME,
       id: sessionId,
       status: 'qr_ready',
       connected: false,
-      qr: 'data:image/png;base64,' + base64Encode(png),
+      qr: 'data:image/png;base64,' + base64Encode(png ?? EMPTY),
     });
   }
 
@@ -59,19 +66,21 @@ export class WwebjsShowQr {
 }
 
 /**
- * `base64_encode($png)` PHP, untuk body respons yang di sini sudah berupa teks.
+ * `base64_encode()` PHP, untuk byte mentah.
  *
- * Bedanya nyata dan tidak bisa dihindari di lapisan ini: `$response->body` di
- * Guzzle adalah byte mentah, sedangkan `HttpExecutor` membaca body lewat
- * `response.text()` sehingga byte-nya sudah diterjemahkan sebagai UTF-8. Untuk
- * QR yang byte-nya sah UTF-8 hasilnya sama; untuk PNG yang memuat byte di luar
- * UTF-8 (mis. `0x89` di header PNG), byte itu sudah menjadi U+FFFD sebelum
- * sampai ke sini — jadi yang di-base64 memang teks yang diterima, bukan byte
- * asli server. Memperbaikinya menuntut `HttpExecutor` menyediakan byte mentah,
- * dan itu di luar cakupan berkas ini.
+ * Menerima byte, bukan teks, karena itulah yang sesungguhnya dikirim server —
+ * dan itulah yang di-base64 oleh `base64_encode($response->body)` di PHP, sebab
+ * `$response->body` Guzzle juga byte mentah. Isi PNG tidak bisa dilewatkan
+ * sebagai teks: header-nya memuat `0x89`, yang di luar UTF-8, sehingga versi
+ * teks dari fungsi ini akan mengubah byte pertama setiap QR menjadi U+FFFD dan
+ * menghasilkan gambar yang tidak bisa dibuka.
+ *
+ * `btoa` dijalankan atas satu string biner karena `String.fromCharCode` hanya
+ * menerima satu argumen per byte. QR PNG besarnya beberapa kilobyte, jadi
+ * perulangan sederhana ini cukup; kalau suatu saat ada body besar yang lewat
+ * sini, penggabungan per blok lebih tepat.
  */
-function base64Encode(value: string): string {
-  const bytes = new TextEncoder().encode(value);
+function base64Encode(bytes: Uint8Array): string {
   let binary = '';
 
   for (const byte of bytes) {

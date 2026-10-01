@@ -23,6 +23,24 @@ export class HttpResponse {
     readonly error = '',
     readonly timedOut = false,
     readonly retryAfter: string | null = null,
+    /**
+     * Byte mentah body, sebelum diterjemahkan sebagai UTF-8.
+     *
+     * `body` sengaja tetap ada dan tetap yang dipakai hampir semua provider:
+     * tujuh gateway di sini berbicara JSON, dan memaksa mereka mengurai byte
+     * sendiri hanya akan menambah kerja yang sama di tujuh tempat.
+     *
+     * Field ini ada karena **satu** endpoint memang mengirim biner: QR Wwebjs
+     * mengirim PNG. Di PHP, `$response->body` Guzzle adalah byte mentah,
+     * sehingga `base64_encode()` di sana mengubah byte yang sebenarnya.
+     * Padanannya di sini tidak bisa memakai `body` — `response.text()` sudah
+     * mengganti setiap byte di luar UTF-8 (mis. `0x89` di header PNG) menjadi
+     * U+FFFD, dan byte yang sudah hilang tidak bisa dikembalikan. Jadi yang
+     * benar-benar diterima server disimpan di sini apa adanya.
+     *
+     * Null bila request gagal di level transport, atau bila body-nya kosong.
+     */
+    readonly bytes: Uint8Array | null = null,
   ) {}
 
   isSuccess(): boolean {

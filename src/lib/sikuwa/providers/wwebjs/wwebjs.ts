@@ -156,7 +156,9 @@ export class Wwebjs extends AbstractProvider {
       this.reject(response, body);
     }
 
-    return WwebjsShowQr.fromImage(response.body ?? '', sessionId);
+    // Byte mentah, bukan `body`: PNG memuat byte di luar UTF-8, dan `body`
+    // sudah melewati decoder UTF-8 sehingga byte itu tinggal U+FFFD.
+    return WwebjsShowQr.fromImage(response.bytes, sessionId);
   }
 
   /**

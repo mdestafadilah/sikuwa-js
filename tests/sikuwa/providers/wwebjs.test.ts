@@ -25,16 +25,28 @@ const BASE = 'https://wwebjs.test';
 const SESSION = 'siku-1';
 
 /**
- * Fixture PNG.
+ * Fixture PNG sebagai byte: delapan byte tanda tangan `89 50 4E 47 0D 0A 1A 0A`,
+ * lalu awal chunk IHDR yang dipotong.
  *
- * Sengaja hanya berisi byte ASCII. `HttpExecutor` membaca body sebagai teks
- * UTF-8, sedangkan PNG asli memuat `0x89` di headernya — byte itu sudah menjadi
- * U+FFFD sebelum sampai ke provider, sehingga paritas byte mentah dengan PHP
- * mustahil di lapisan ini. Yang diuji di sini adalah pembungkusan menjadi data
- * URI, dan untuk byte yang selamat dari decode UTF-8 hasilnya sama persis
- * dengan `base64_encode()` milik PHP.
+ * `0x89` di posisi pertama bukan hiasan. Byte itu tidak sah sebagai UTF-8
+ * tunggal, jadi ia menjadi U+FFFD begitu body dibaca sebagai teks — dan fixture
+ * yang seluruhnya ASCII tidak akan bisa membedakan `HttpResponse.bytes` dari
+ * `HttpResponse.body`. Justru perbedaan itulah yang dijaga di sini: inilah
+ * satu-satunya endpoint di SDK ini yang membalas biner, bukan JSON.
  */
-const PNG = 'PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01';
+const PNG_BYTES = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01,
+]);
+
+/**
+ * Fixture yang sama sebagai base64.
+ *
+ * Dihitung `Buffer`, bukan lewat pembantu milik SDK — kalau harapannya
+ * dihitung dengan cara yang sama seperti yang diuji, uji itu hanya membuktikan
+ * kode sama dengan dirinya sendiri.
+ */
+const PNG = Buffer.from(PNG_BYTES).toString('base64');
 
 function fakeEnv(values: Record<string, string>): void {
   Config.useResolver((key) => values[key] ?? null);
@@ -48,7 +60,7 @@ function provider(backend: MockBackend, options: ConfigOptions = {}): Wwebjs {
 }
 
 function png(): Response {
-  return new Response(PNG, { status: 200, headers: { 'Content-Type': 'image/png' } });
+  return new Response(PNG_BYTES, { status: 200, headers: { 'Content-Type': 'image/png' } });
 }
 
 beforeEach(() => {
@@ -219,7 +231,7 @@ describe('Wwebjs — berkas', () => {
 
     await provider(backend).sendImage({
       destination: '081234567890',
-      image: 'data:image/png;base64,' + btoa(PNG),
+      image: 'data:image/png;base64,' + PNG,
       filename: 'bukti.png',
       caption: 'Bukti transfer',
     });
@@ -230,7 +242,7 @@ describe('Wwebjs — berkas', () => {
     expect(payload['content']).toEqual({
       mimetype: 'image/png',
       // whatsapp-web.js menerima base64 mentah, bukan data URI.
-      data: btoa(PNG),
+      data: PNG,
       filename: 'bukti.png',
     });
     expect(payload['options']).toEqual({ caption: 'Bukti transfer' });
@@ -313,7 +325,7 @@ describe('Wwebjs — berkas', () => {
     await expect(
       provider(backend).sendImage({
         destination: 'abc',
-        image: 'data:image/png;base64,' + btoa(PNG),
+        image: 'data:image/png;base64,' + PNG,
         filename: 'bukti.png',
       }),
     ).rejects.toThrow("Nomor tujuan 'abc' tidak valid");
@@ -386,10 +398,40 @@ describe('Wwebjs — QR dan session', () => {
 
     const session = await provider(backend).showQr();
 
-    expect(session.qrImage()).toBe('data:image/png;base64,' + btoa(PNG));
+    expect(session.qrImage()).toBe('data:image/png;base64,' + PNG);
     expect(session.hasQr()).toBe(true);
     expect(session.isConnected()).toBe(false);
+    // `iVBORw` adalah base64 dari `89 50 4E 47 0D 0A`, jadi QR-nya benar-benar
+    // dimulai sebagai PNG — byte pertama itulah yang dulu hilang.
+    expect(session.qrBase64().startsWith('iVBORw')).toBe(true);
     expect(backend.lastUrl()).toBe(`${BASE}/session/qr/${SESSION}/image`);
+  });
+
+  test('showQr memakai byte mentah, bukan body yang sudah jadi teks', async () => {
+    // Seluruh 256 nilai byte, termasuk yang tidak sah sebagai UTF-8. Kalau QR
+    // dibaca dari `HttpResponse.body` alih-alih `HttpResponse.bytes`, setiap
+    // byte di luar UTF-8 sudah menjadi U+FFFD di sini.
+    const everyByte = new Uint8Array(256);
+
+    for (let value = 0; value < 256; value += 1) everyByte[value] = value;
+
+    const backend = new MockBackend([
+      new Response(everyByte, { status: 200, headers: { 'Content-Type': 'image/png' } }),
+    ]);
+
+    const session = await provider(backend).showQr();
+
+    expect(session.qrImage()).toBe(
+      'data:image/png;base64,' + Buffer.from(everyByte).toString('base64'),
+    );
+
+    // Harapan di atas saja belum membuktikan apa pun kalau kedua jalur
+    // kebetulan sama. Yang membedakan: apa yang akan keluar seandainya QR
+    // dibaca sebagai teks. Selama hasilnya berbeda, jalur byte memang yang
+    // dipakai — dan hanya jalur byte yang tidak kehilangan data.
+    const lewatTeks = Buffer.from(new TextDecoder().decode(everyByte)).toString('base64');
+
+    expect(session.qrBase64()).not.toBe(lewatTeks);
   });
 
   test('showQr yang sudah dipindai dilaporkan sebagai tersambung', async () => {
