@@ -88,3 +88,22 @@ export { ApiMe } from './providers/apime/apime';
 export { ApiMeMessage } from './providers/apime/apime-message';
 export { ApiMeSession } from './providers/apime/apime-session';
 export { ApiMeShowQr } from './providers/apime/apime-show-qr';
+
+export { EvolutionAPI } from './providers/evolution-api/evolution-api';
+export { EvolutionAPIMessage } from './providers/evolution-api/evolution-api-message';
+export { EvolutionAPISession } from './providers/evolution-api/evolution-api-session';
+
+export { Wuzapi } from './providers/wuzapi/wuzapi';
+export { WuzapiMessage } from './providers/wuzapi/wuzapi-message';
+export { WuzapiSession } from './providers/wuzapi/wuzapi-session';
+export { WuzapiShowQr } from './providers/wuzapi/wuzapi-show-qr';
+
+export { Wwebjs } from './providers/wwebjs/wwebjs';
+export { WwebjsMessage } from './providers/wwebjs/wwebjs-message';
+export { WwebjsSession } from './providers/wwebjs/wwebjs-session';
+export { WwebjsShowQr } from './providers/wwebjs/wwebjs-show-qr';
+
+export { Waxum } from './providers/waxum/waxum';
+export { WaxumMessage } from './providers/waxum/waxum-message';
+export { WaxumSession } from './providers/waxum/waxum-session';
+export { WaxumShowQr } from './providers/waxum/waxum-show-qr';

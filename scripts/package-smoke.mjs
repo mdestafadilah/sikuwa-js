@@ -12,7 +12,20 @@
 import http from "node:http";
 import assert from "node:assert/strict";
 
-import { Config, Fonnte, Pacing, PhoneNumber, RateLimitException, Typing } from "sikuwa";
+import {
+  ApiMe,
+  Config,
+  EvolutionAPI,
+  Fonnte,
+  OpenWA,
+  Pacing,
+  PhoneNumber,
+  RateLimitException,
+  Typing,
+  Waxum,
+  Wwebjs,
+  Wuzapi,
+} from "sikuwa";
 
 const received = [];
 
@@ -46,7 +59,25 @@ function check(label, actual, expected) {
 
 try {
   // 1. Seluruh ekspor tingkat atas benar-benar ada.
-  for (const [name, value] of Object.entries({ Config, Fonnte, Pacing, PhoneNumber, Typing })) {
+  //
+  // Ketujuh gateway ikut diperiksa, bukan hanya yang kebetulan dipakai di
+  // bawah: inilah satu-satunya tempat yang membuktikan tiap provider benar
+  // benar ter-ekspor dan modulnya bisa dimuat Node biasa. Sebuah provider yang
+  // lupa didaftarkan di `index.ts` akan lolos dari seluruh tes repo, karena
+  // tes repo mengimpornya langsung dari berkasnya, bukan dari permukaan paket.
+  for (const [name, value] of Object.entries({
+    Config,
+    Fonnte,
+    OpenWA,
+    ApiMe,
+    EvolutionAPI,
+    Wuzapi,
+    Wwebjs,
+    Waxum,
+    Pacing,
+    PhoneNumber,
+    Typing,
+  })) {
     check(`ekspor ${name}`, typeof value, "function");
   }
 

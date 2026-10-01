@@ -108,8 +108,7 @@ tidak terkesan sudah setara padahal belum.
 | Exceptions (14 kelas), Config, Session, Contracts | selesai |
 | Http (HttpResponse, HttpExecutor berbasis `fetch`) | selesai |
 | AbstractProvider (plan, retry, pacing, typing, jalur kirim berurutan) | selesai |
-| **Fonnte**, **OpenWA**, **ApiMe** | **selesai** |
-| EvolutionAPI, Wuzapi, Wwebjs, Waxum | belum |
+| **Fonnte**, **OpenWA**, **ApiMe**, **EvolutionAPI**, **Wuzapi**, **Wwebjs**, **Waxum** | **selesai** |
 | Client (registri provider, pemilihan `auto`, `notify()`) | belum |
 
 Sampai `Client` selesai, provider dibuat langsung seperti contoh di atas.
@@ -135,7 +134,7 @@ mudah terlewat (`is_numeric(true) === false`, `"0"` dianggap salah oleh
 
 ```bash
 bun install
-bun test              # 345 tes paritas + integrasi
+bun test              # 475 tes paritas + integrasi
 bun run typecheck     # app, worker, dan pustaka
 bun run build:lib     # keluaran npm ke dist-lib/
 bun run dev           # playground di http://localhost:5173
@@ -167,7 +166,7 @@ src/lib/sikuwa/          pustaka (tanpa dependensi runtime)
   exceptions/            seluruh kelas exception
   config.ts, session.ts
   contracts/whatsapp.ts  antarmuka yang harus dipenuhi setiap gateway
-  providers/             AbstractProvider + tiap gateway (fonnte/, openwa/, apime/)
+  providers/             AbstractProvider + tujuh gateway (fonnte/, openwa/, apime/, …)
   index.ts               permukaan publik
 src/api/whatsapp/        playground Hono (service → controller → route)
 src/routes/whatsapp.tsx  halaman playground
