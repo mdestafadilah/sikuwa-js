@@ -206,3 +206,10 @@ dist-lib
 
 .tanstack
 .workbuddy-ai
+
+### Perkakas agen ###
+# State lokal milik perkakas agen, bukan bagian dari pustaka. Tanpa ini ia
+# muncul sebagai berkas tak terlacak dan cepat atau lambat ikut ter-commit.
+.agents/
+.claude/
+skills-lock.json
