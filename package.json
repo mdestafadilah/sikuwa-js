@@ -59,7 +59,8 @@
   },
   "scripts": {
     "build:lib": "bun scripts/build-lib.mjs",
-    "prepublishOnly": "bun test && bun run build:lib",
+    "verify:package": "bun scripts/verify-package.mjs",
+    "prepublishOnly": "bun test && bun run build:lib && bun run verify:package",
     "cf-typegen": "wrangler types",
     "check": "tsc && vite build && wrangler deploy --dry-run",
     "lint": "eslint .",
