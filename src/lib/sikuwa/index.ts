@@ -83,3 +83,8 @@ export { OpenWAMessage } from './providers/openwa/openwa-message';
 export { OpenWABulkMessage } from './providers/openwa/openwa-bulk-message';
 export { OpenWASession } from './providers/openwa/openwa-session';
 export { OpenWAShowQr } from './providers/openwa/openwa-show-qr';
+
+export { ApiMe } from './providers/apime/apime';
+export { ApiMeMessage } from './providers/apime/apime-message';
+export { ApiMeSession } from './providers/apime/apime-session';
+export { ApiMeShowQr } from './providers/apime/apime-show-qr';
