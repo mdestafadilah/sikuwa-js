@@ -79,6 +79,22 @@ WHATSAPP_THROTTLE_WINDOW=60
 
 Daftar lengkapnya ada di [`.env.example`](.env.example).
 
+## Gateway yang didukung
+
+| Gateway | Jenis | Basis | Tautan |
+| --- | --- | --- | --- |
+| Fonnte | Berbayar (cloud) | — | <https://fonnte.com/> |
+| OpenWA | Self-hosted | Node.js | <https://github.com/rmyndharis/OpenWA> |
+| ApiMe | Self-hosted | Go / WhatsMeow | <https://github.com/open-apime/apime> |
+| Evolution API | Self-hosted | Node.js / Baileys | <https://github.com/evolution-foundation/evolution-api> |
+| Wuzapi | Self-hosted | Go / WhatsMeow | <https://github.com/asternic/wuzapi> |
+| Wwebjs | Self-hosted | Node.js / whatsapp-web.js | <https://github.com/avoylenko/wwebjs-api> |
+| Waxum | Self-hosted | Rust / whatsapp-rust | <https://github.com/imtaqin/waxum> |
+
+Ketujuhnya memakai bentuk pesan yang sama (`destination` + `message`), jadi
+mengganti gateway tidak mengubah kode pemanggil. Yang berbeda hanya kredensial,
+id sesi, dan kunci `.env`-nya.
+
 ## Status porting
 
 Ini **porting, bukan konversi**: paket PHP tetap sumber kebenaran, dan versi npm
@@ -92,8 +108,8 @@ tidak terkesan sudah setara padahal belum.
 | Exceptions (14 kelas), Config, Session, Contracts | selesai |
 | Http (HttpResponse, HttpExecutor berbasis `fetch`) | selesai |
 | AbstractProvider (plan, retry, pacing, typing, jalur kirim berurutan) | selesai |
-| **Fonnte** | **selesai** |
-| Provider lain (OpenWA, ApiMe, EvolutionAPI, Wuzapi, Wwebjs, Waxum) | belum |
+| **Fonnte**, **OpenWA** | **selesai** |
+| ApiMe, EvolutionAPI, Wuzapi, Wwebjs, Waxum | belum |
 | Client (registri provider, pemilihan `auto`, `notify()`) | belum |
 
 Sampai `Client` selesai, provider dibuat langsung seperti contoh di atas.
@@ -119,7 +135,7 @@ mudah terlewat (`is_numeric(true) === false`, `"0"` dianggap salah oleh
 
 ```bash
 bun install
-bun test              # 287 tes paritas + integrasi
+bun test              # 315 tes paritas + integrasi
 bun run typecheck     # app, worker, dan pustaka
 bun run build:lib     # keluaran npm ke dist-lib/
 bun run dev           # playground di http://localhost:5173
@@ -151,7 +167,7 @@ src/lib/sikuwa/          pustaka (tanpa dependensi runtime)
   exceptions/            seluruh kelas exception
   config.ts, session.ts
   contracts/whatsapp.ts  antarmuka yang harus dipenuhi setiap gateway
-  providers/             AbstractProvider + tiap gateway (fonnte/ sudah ada)
+  providers/             AbstractProvider + tiap gateway (fonnte/, openwa/)
   index.ts               permukaan publik
 src/api/whatsapp/        playground Hono (service → controller → route)
 src/routes/whatsapp.tsx  halaman playground

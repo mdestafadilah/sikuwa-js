@@ -77,3 +77,9 @@ export { FonnteMessage, type FonnteLine } from './providers/fonnte/fonnte-messag
 export { FonnteBulkMessage } from './providers/fonnte/fonnte-bulk-message';
 export { FonnteSession } from './providers/fonnte/fonnte-session';
 export { FonnteShowQr } from './providers/fonnte/fonnte-show-qr';
+
+export { OpenWA } from './providers/openwa/openwa';
+export { OpenWAMessage } from './providers/openwa/openwa-message';
+export { OpenWABulkMessage } from './providers/openwa/openwa-bulk-message';
+export { OpenWASession } from './providers/openwa/openwa-session';
+export { OpenWAShowQr } from './providers/openwa/openwa-show-qr';
