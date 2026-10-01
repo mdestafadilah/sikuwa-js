@@ -32,6 +32,29 @@ baris.
 
 ## Pakai
 
+Titik masuk yang disarankan adalah `Client` — ia memegang konfigurasi, transport,
+dan pemilihan gateway:
+
+```ts
+import { Client } from "sikuwa";
+
+const client = new Client({
+  provider: "OpenWA",          // atau "auto"
+  token: "owa_k1_…",
+  url: "http://localhost:2785",
+  session: "my-session",
+});
+
+await client.send({ destination: "081234567890", message: "Halo dari sikuwa!" });
+```
+
+Dengan `provider: "auto"`, gateway diundi di antara yang punya
+`WHATSAPP_TOKEN_<Provider>` sendiri — token umum `WHATSAPP_TOKEN` tidak dihitung,
+karena ia tidak menunjukkan gateway mana yang siap dipakai. Opsi yang tidak diisi
+dibaca dari environment, jadi `new Client()` tanpa argumen pun jalan.
+
+Satu gateway juga bisa dipakai langsung, tanpa lewat `Client`:
+
 ```ts
 import { Fonnte } from "sikuwa";
 
@@ -109,11 +132,11 @@ tidak terkesan sudah setara padahal belum.
 | Http (HttpResponse, HttpExecutor berbasis `fetch`) | selesai |
 | AbstractProvider (plan, retry, pacing, typing, jalur kirim berurutan) | selesai |
 | **Fonnte**, **OpenWA**, **ApiMe**, **EvolutionAPI**, **Wuzapi**, **Wwebjs**, **Waxum** | **selesai** |
-| Client (registri provider, pemilihan `auto`, `notify()`) | belum |
+| Client (registri provider, pemilihan `auto`, `notify()`) | selesai |
 
-Sampai `Client` selesai, provider dibuat langsung seperti contoh di atas.
-Mengganti gateway nanti tidak mengubah kode pemanggil, karena seluruh provider
-memakai bentuk pesan yang sama.
+Seluruh lapisan versi PHP sudah diporting. Yang belum ada hanyalah hal-hal yang
+memang tidak dibawa dari sana — mis. integrasi framework CodeIgniter/Laravel,
+karena SDK ini sengaja tidak terikat framework.
 
 ## Perbedaan yang disengaja dari versi PHP
 
@@ -125,8 +148,11 @@ memakai bentuk pesan yang sama.
   membedakan properti `$this->config` dari method `$this->config()`; JavaScript
   tidak bisa, dan properti `config` dipertahankan apa adanya karena setiap
   provider membacanya jauh lebih sering.
+- **`Client::config()` dan `Client::http()` menjadi properti `client.config` dan
+  `client.http`.** Sebabnya sama; di sini tidak ada nama yang bergeser, hanya
+  bentuk pemanggilannya.
 
-Selain tiga itu, perilakunya dijaga setia — termasuk detail semantik PHP yang
+Selain empat itu, perilakunya dijaga setia — termasuk detail semantik PHP yang
 mudah terlewat (`is_numeric(true) === false`, `"0"` dianggap salah oleh
 `filter_var`, `rtrim($url, '/')` membuang semua garis miring, dan seterusnya).
 
@@ -134,7 +160,7 @@ mudah terlewat (`is_numeric(true) === false`, `"0"` dianggap salah oleh
 
 ```bash
 bun install
-bun test              # 475 tes paritas + integrasi
+bun test              # 504 tes paritas + integrasi
 bun run typecheck     # app, worker, dan pustaka
 bun run build:lib     # keluaran npm ke dist-lib/
 bun run dev           # playground di http://localhost:5173

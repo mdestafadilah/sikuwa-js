@@ -14,6 +14,7 @@ import assert from "node:assert/strict";
 
 import {
   ApiMe,
+  Client,
   Config,
   EvolutionAPI,
   Fonnte,
@@ -65,7 +66,9 @@ try {
   // benar ter-ekspor dan modulnya bisa dimuat Node biasa. Sebuah provider yang
   // lupa didaftarkan di `index.ts` akan lolos dari seluruh tes repo, karena
   // tes repo mengimpornya langsung dari berkasnya, bukan dari permukaan paket.
+  // `Client` ada di daftar ini karena ia titik masuk utama paket.
   for (const [name, value] of Object.entries({
+    Client,
     Config,
     Fonnte,
     OpenWA,
@@ -146,6 +149,34 @@ try {
   // 5. Utilitas murni ikut terbawa utuh.
   check("PhoneNumber.normalize", PhoneNumber.normalize("0812-3456-7890"), "6281234567890");
   check("Pacing.fromArray", Pacing.fromArray({ cycle: "0,30" }).delayFor(1, 10), 30);
+
+  // 6. `Client` — titik masuk utama — benar-benar mengirim lewat paket ini.
+  //
+  // Dijalankan dengan `provider: 'auto'` supaya sekaligus membuktikan pemilihan
+  // gateway bekerja di Node biasa, bukan hanya di dalam tes repo.
+  const client = new Client({
+    provider: "auto",
+    url: `http://127.0.0.1:${port}/client`,
+    tokens: { Fonnte: "token-client" },
+  });
+
+  check("Client memilih gateway dari token yang ada", client.providerName(), "Fonnte");
+  check("Client.providers memuat tujuh gateway", Object.keys(Client.providers()).length, 7);
+  check(
+    "Client.configured",
+    Client.configured({ tokens: { Fonnte: "x", OpenWA: "y" } }),
+    ["Fonnte", "OpenWA"],
+  );
+  check(
+    "Client.send",
+    await client.send({ destination: "081234567890", message: "Lewat Client" }),
+    "Sukses: 2 pesan terkirim",
+  );
+
+  const viaClient = received.find((item) => item.url === "/client");
+
+  check("Client memakai URL yang dikonfigurasi", viaClient?.method, "POST");
+  check("Client memakai token per-provider", viaClient?.headers["authorization"], "token-client");
 
   assert.ok(true);
 } finally {

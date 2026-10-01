@@ -1,4 +1,5 @@
 import {
+  Client,
   Config,
   File,
   Fonnte,
@@ -22,22 +23,19 @@ import {
  * Seluruh isi berkas ini **tidak menyentuh jaringan**. Yang ditampilkan adalah
  * keputusan yang memang murni: berapa detik jeda yang akan dipakai, berapa lama
  * indikator mengetik tampil, bagaimana sebuah nomor dinormalkan, bagaimana
- * sebuah berkas diterjemahkan ke bentuk tiap gateway, dan — sejak
- * `AbstractProvider` dan Fonnte selesai — payload apa persisnya yang akan
- * dikirim. Jadi halaman ini bisa dipakai memeriksa `.env` tanpa mengirim satu
- * pesan pun.
+ * sebuah berkas diterjemahkan ke bentuk tiap gateway, dan payload apa persisnya
+ * yang akan dikirim. Jadi halaman ini bisa dipakai memeriksa `.env` tanpa
+ * mengirim satu pesan pun.
  */
 
-/** Nama gateway yang dikenali, sama persis dengan `Client::PROVIDERS` versi PHP. */
-export const PROVIDERS = [
-  "Fonnte",
-  "OpenWA",
-  "ApiMe",
-  "EvolutionAPI",
-  "Wuzapi",
-  "Wwebjs",
-  "Waxum",
-] as const;
+/**
+ * Nama gateway yang dikenali.
+ *
+ * Diambil dari registri milik `Client`, bukan ditulis ulang: daftar yang
+ * disalin cepat atau lambat akan berbeda dari yang benar-benar dikenali SDK,
+ * dan playground adalah tempat perbedaan itu paling menyesatkan.
+ */
+export const PROVIDERS: string[] = Object.keys(Client.providers());
 
 /** Panjang pesan bawaan yang dipakai contoh, dalam karakter. */
 const DEFAULT_LENGTHS = [12, 60, 150, 300, 900];

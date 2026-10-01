@@ -21,9 +21,14 @@
  * `settings()`, bukan `config()`. PHP membedakan properti `$this->config` dari
  * method `$this->config()`; JavaScript tidak bisa, dan properti `config`
  * dipertahankan apa adanya karena tiap provider membacanya jauh lebih sering.
+ *
+ * Sebab yang sama mengubah `Client::config()` dan `Client::http()` menjadi
+ * properti readonly `client.config` dan `client.http`. Di situ tidak ada nama
+ * yang bergeser — yang berubah hanya bentuk pemanggilannya.
  */
 
 export { Config, type ConfigOptions, type EnvResolver } from './config';
+export { Client, type ClientOptions, type ProviderConstructor } from './client';
 export { Session, type SessionOptions } from './session';
 
 export {

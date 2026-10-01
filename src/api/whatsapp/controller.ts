@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { Config, ConfigurationException } from "../../lib/sikuwa";
+import { Client, Config, ConfigurationException } from "../../lib/sikuwa";
 import { responseBadRequest, responseOK } from "../utils/response";
 import {
   PROVIDERS,
@@ -65,16 +65,13 @@ class WhatsappController {
 
   /** Daftar gateway yang dikenali, dan mana yang tokennya benar-benar terisi. */
   providers = (c: Context) =>
-    handle(c, "Daftar gateway SIKUWA", () => {
-      const config = Config.fromEnvironment();
-
-      return {
-        daftar: PROVIDERS,
-        // Hanya `WHATSAPP_TOKEN_<Provider>` yang dihitung — token umum tidak
-        // menunjukkan gateway mana yang siap dipakai.
-        siap: PROVIDERS.filter((name) => config.providerToken(name) !== null),
-      };
-    });
+    handle(c, "Daftar gateway SIKUWA", () => ({
+      daftar: PROVIDERS,
+      // Sengaja lewat `Client` supaya aturannya hanya ada di satu tempat:
+      // hanya `WHATSAPP_TOKEN_<Provider>` yang dihitung, dan token umum tidak
+      // menunjukkan gateway mana yang siap dipakai.
+      siap: Client.configured(Config.fromEnvironment()),
+    }));
 
   pacingPreview = async (c: Context) =>
     handle(c, "Pratinjau pacing", async () =>

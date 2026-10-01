@@ -728,8 +728,9 @@ function WhatsappPlayground() {
             Pustaka SIKUWA hasil porting dari PHP ke TypeScript, dijalankan di
             dalam runtime template ini. Semua yang dihitung di halaman ini
             murni — <span className="text-zinc-200">tidak ada pesan WhatsApp
-            yang benar-benar dikirim</span>. Provider pilot, Fonnte, sudah
-            selesai: kartu terakhir menunjukkan payload yang akan dikirimnya.
+            yang benar-benar dikirim</span>. Ketujuh gateway sudah selesai
+            diporting; kartu terakhir mempratinjau payload Fonnte, satu-satunya
+            yang perakitannya ditampilkan di sini.
           </p>
         </header>
 
