@@ -1,0 +1,28 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.lib.tsbuildinfo",
+
+    // tsconfig.node.json melarang keluaran; build pustaka justru butuh.
+    "noEmit": false,
+    // Hanya boleh menyala bersama noEmit/emitDeclarationOnly, dan sumbernya
+    // memang tidak pernah mengimpor dengan ekstensi .ts.
+    "allowImportingTsExtensions": false,
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    // Sengaja BUKAN `dist/`: direktori itu milik `vite build` (aplikasi
+    // playground menulis `dist/client` dan `dist/bhvr_template` di sana), jadi
+    // menaruh keluaran pustaka di situ berarti keduanya saling menimpa.
+    "outDir": "dist-lib",
+    "rootDir": "src/lib/sikuwa",
+
+    // Tanpa DOM: pustaka harus tetap bisa dikompilasi di lingkungan Node,
+    // Worker, maupun peramban. Tipe `fetch`/`Response`/`Blob` datang dari
+    // @types/node, bukan dari lib DOM — jadi tidak ada tipe peramban yang
+    // bocor ke berkas .d.ts milik pemakai.
+    "types": ["@types/node"]
+  },
+  "include": ["src/lib/sikuwa"]
+}

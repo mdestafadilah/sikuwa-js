@@ -143,6 +143,9 @@ out
 .nuxt
 dist
 
+# Keluaran build pustaka yang diterbitkan ke npm (dibuat ulang oleh build:lib)
+dist-lib
+
 # Gatsby files
 .cache/
 # Comment in the public line in if your project uses Gatsby and not Next.js
