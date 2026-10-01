@@ -1,6 +1,6 @@
 {
   "name": "sikuwa",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "SDK multi-gateway WhatsApp untuk JavaScript/TypeScript — satu antarmuka untuk Fonnte, OpenWA, ApiMe, Evolution API, Wuzapi, Wwebjs, dan Waxum. Porting dari paket PHP mdestafadilah/sikuwa, tanpa dependensi runtime.",
   "license": "MIT",
   "author": "mdestafadilah (https://github.com/mdestafadilah)",
