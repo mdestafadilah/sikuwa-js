@@ -285,6 +285,29 @@ server HTTP sungguhan (`fonnte-live.test.ts`) — klien tiruan tidak bisa
 membuktikan bahwa `URLSearchParams`, `boundary` multipart, dan byte berkas
 benar-benar utuh setelah melewati `fetch` bawaan.
 
+### Merilis
+
+Rilis berjalan dari GitHub, bukan dari laptop:
+
+```bash
+# 1. Naikkan versi di package.json, commit, push.
+# 2. Buat GitHub Release dengan tag v<versi> — mis. v0.1.8.
+```
+
+`.github/workflows/publish.yml` yang menerbitkan: ia memeriksa bahwa tag cocok
+dengan `package.json`, memastikan versinya belum ada di registry, lalu
+menjalankan `npm publish`. Tidak ada token npm yang disimpan di repo — npm
+memakai **trusted publishing (OIDC)** lewat `id-token: write`, dan provenance
+dibuat otomatis.
+
+`prepublishOnly` tetap berlaku di sana, jadi tes, build, dan `verify:package`
+tidak bisa dilewati dari jalur mana pun.
+
+Menerbitkan dari mesin sendiri masih bisa (`npm publish`), tetapi registry kini
+menuntut 2FA untuk publikasi: akun harus punya 2FA aktif, atau memakai token
+granular dengan **Bypass 2FA** menyala. Kalau keduanya tidak ada, jalur lokal
+akan gagal dengan 403 meski izin paketnya sudah `read-write`.
+
 ### Playground
 
 `src/api/whatsapp/` + `src/routes/whatsapp.tsx` menyediakan halaman untuk

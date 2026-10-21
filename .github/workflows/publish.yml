@@ -1,0 +1,90 @@
+name: Publish
+
+# Rilis dijalankan dari GitHub Release, bukan dari push biasa: satu rilis =
+# satu tag = satu versi. `workflow_dispatch` ada untuk mengulang rilis yang
+# gagal setelah tag-nya terlanjur dibuat.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Satu-satunya izin yang benar-benar dibutuhkan. npm menukar token OIDC ini
+  # menjadi hak terbit, sehingga tidak ada token npm yang disimpan di repo
+  # maupun di Secrets.
+  id-token: write
+
+# Dua rilis bersamaan akan bertabrakan di registry pada versi yang sama.
+# Antrekan; jangan batalkan yang sedang berjalan.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Bun dipakai tes, build, dan verify:package — semuanya dijalankan ulang
+      # oleh `prepublishOnly` saat `npm publish`, jadi Bun harus ada di PATH.
+      - name: Pasang Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.6
+
+      - name: Pasang Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          # Cache tidak dipakai di jalur rilis: artefak basi di sini berarti
+          # paket yang terbit bukan yang baru dibangun.
+          package-manager-cache: false
+
+      - name: Pastikan npm cukup baru untuk trusted publishing
+        run: |
+          set -eu
+          v=$(npm --version)
+          echo "npm $v"
+          # Butuh npm >= 11.5.1. Node 24 memenuhinya; kalau suatu saat tidak,
+          # gagalkan di sini dengan pesan yang jelas alih-alih membiarkan OIDC
+          # gagal dengan error yang membingungkan.
+          if [ "$(printf '%s\n11.5.1\n' "$v" | sort -V | head -1)" != "11.5.1" ]; then
+            echo "::error::npm $v terlalu tua; trusted publishing butuh >= 11.5.1"
+            exit 1
+          fi
+
+      - name: Pasang dependensi
+        run: bun install --frozen-lockfile
+
+      # Dua kesalahan yang paling mudah terjadi, dan keduanya lebih baik
+      # tertangkap sebelum `npm publish` menyentuh registry: tag yang tidak
+      # cocok dengan package.json, dan versi yang sudah terbit.
+      - name: Periksa versi sebelum menerbitkan
+        run: |
+          set -eu
+          versi=$(node -p "require('./package.json').version")
+          tag="${{ github.event.release.tag_name }}"
+
+          if [ -n "$tag" ] && [ "${tag#v}" != "$versi" ]; then
+            echo "::error::tag $tag tidak cocok dengan package.json $versi"
+            exit 1
+          fi
+
+          if npm view "sikuwa@$versi" version >/dev/null 2>&1; then
+            echo "::error::sikuwa@$versi sudah ada di registry — naikkan versi dulu"
+            exit 1
+          fi
+
+          echo "siap menerbitkan sikuwa@$versi"
+
+      # `prepublishOnly` di package.json merangkai `bun test && bun run
+      # build:lib && bun run verify:package`, jadi pemeriksaannya tidak bisa
+      # dilewati dari sini. Jangan pernah menambahkan --ignore-scripts.
+      #
+      # Provenance dibuat otomatis oleh npm saat menerbitkan lewat OIDC —
+      # tidak perlu --provenance.
+      - name: Terbitkan ke npm
+        run: npm publish
