@@ -102,6 +102,113 @@ WHATSAPP_THROTTLE_WINDOW=60
 
 Daftar lengkapnya ada di [`.env.example`](.env.example).
 
+## Memeriksa nomor sebelum mengirim
+
+WhatsApp tidak memberi tahu apakah sebuah nomor bisa dihubungi sebelum pesannya
+benar-benar dikirim, dan menembak nomor yang tidak pernah ada adalah pemicu
+pemblokiran yang paling sering. `checkNumbers()` menjawabnya lebih dulu:
+
+```ts
+const hasil = await client.checkNumbers(["081234567890", "089876543210"]);
+
+hasil.isRegistered("081234567890"); // true
+hasil.whatsappId("081234567890");   // "6281234567890@c.us"
+hasil.registered();                 // ["081234567890"]
+hasil.unregistered();               // ["089876543210"]
+```
+
+Nomor boleh ditulis dalam bentuk apa pun (`0812…`, `+62 812…`, `62812…`) — setiap
+pencarian menormalkannya lebih dulu. Hasilnya `NumberCheck`, satu bentuk yang
+sama untuk ketujuh gateway, jadi berpindah gateway tidak mengubah kode pemanggil.
+
+Bila ingin penyaringannya otomatis, nyalakan `check_numbers`:
+
+```ts
+const client = new Client({ provider: "OpenWA", check_numbers: true });
+
+// 089876543210 dibuang sebelum dikirim, dan jumlahnya dilaporkan.
+await client.send([
+  { destination: "081234567890", message: "Halo" },
+  { destination: "089876543210", message: "Halo" },
+]);
+// "Sukses, messageId: … (1 tujuan dilewati karena tidak terdaftar: 089876543210)"
+```
+
+Tiga janji yang dijaga fitur ini:
+
+1. **Mati berarti tidak berubah sama sekali.** Selama `check_numbers` tidak
+   dinyalakan, tidak ada satu pun request pemeriksaan yang muncul.
+2. **Gagal berarti tetap kirim.** Pemeriksaan yang timeout, atau ditolak karena
+   kuncinya tidak berperan operator, tidak pernah menahan pesan.
+3. **Hanya yang dipastikan tidak ada yang dibuang.** Nomor yang tidak disebut
+   gateway berarti "belum diperiksa", bukan "tidak terdaftar".
+
+## Membagi batch ke beberapa gateway
+
+Mode `auto` mengundi gateway **sekali per panggilan**, jadi satu `send()` berisi
+seratus pesan tetap keluar lewat satu gateway saja. Dengan `WHATSAPP_ROTATE`
+menyala, batch itu dibagi ke semua gateway yang punya token:
+
+```ts
+const client = new Client({
+  provider: "auto",
+  tokens: { OpenWA: "owa-key", Wuzapi: "wuz-token" },
+  urls: { OpenWA: "https://openwa.test", Wuzapi: "https://wuzapi.test" },
+  rotate: true,
+});
+
+await client.send(seratusPesan);
+// "Sukses, 100/100 pesan terkirim lewat 2 gateway (OpenWA 50, Wuzapi 50)"
+```
+
+Urutan gateway diundi tiap panggilan, dan pesan dibagikan bergiliran sehingga
+jumlahnya berbeda paling banyak satu. Pengaturan tingkat panggilan — `pacing`,
+`typing`, `throttle` — ikut ke setiap potongan; tanpa itu potongan kedua dan
+seterusnya kembali ke jeda bawaan gateway, tepat di bagian yang paling butuh
+dijeda.
+
+Rotasi menuntut `WHATSAPP_PROVIDER=auto`: satu gateway yang dipilih tetap tidak
+punya apa pun untuk dibagi, jadi kombinasi itu ditolak sebelum satu pun request
+berangkat.
+
+## Logger
+
+SDK ini tidak pernah mencetak apa pun sendiri. Bila ingin melihat kejadian yang
+tadinya senyap — indikator "sedang mengetik" yang gagal, percobaan ulang setelah
+gateway menolak sementara, tujuan yang dilewati karena tidak terdaftar — pasang
+logger:
+
+```ts
+const client = new Client({
+  provider: "OpenWA",
+  logger: {
+    log: (level, message, context) => console.log(level, message, context),
+  },
+});
+```
+
+Bentuknya sengaja cuma satu method `log(level, message, context)` — `pino`,
+`winston`, dan `console` semuanya bisa dibungkus dengan satu baris, sedangkan
+meniru delapan method PSR-3 berarti memaksa setiap logger buatan pemanggil
+menulis method yang tidak pernah dipanggil.
+
+**Logger tidak pernah bisa menggagalkan pengiriman.** Logger yang melempar —
+karena disk penuh, atau konteksnya tidak sesuai harapannya — ditelan diam-diam,
+karena kegagalan hiasan tidak boleh berubah menjadi kegagalan pesan.
+
+## Beberapa session untuk satu gateway
+
+`WHATSAPP_SESSION` dan `WHATSAPP_INSTANCE` masih berlaku seperti sebelumnya.
+Bila satu gateway punya beberapa session, tuliskan sebagai daftar berpisah koma:
+
+```dotenv
+WHATSAPP_SESSIONS_OpenWA=sess-1,sess-2
+WHATSAPP_INSTANCES_EvolutionAPI=inst-1,inst-2
+```
+
+Urutannya menentukan mana yang dipakai lebih dulu; nilai tunggal
+(`WHATSAPP_SESSION`, `WHATSAPP_SESSION_<Provider>`) tetap menang bila diisi.
+
 ## Gateway yang didukung
 
 | Gateway | Jenis | Basis | Tautan |
@@ -122,21 +229,22 @@ id sesi, dan kunci `.env`-nya.
 
 Ini **porting, bukan konversi**: paket PHP tetap sumber kebenaran, dan versi npm
 adalah implementasi kedua. Karena itu cakupannya bertahap — dan versinya
-sengaja dimulai dari `0.1.0`, bukan mengikuti `0.7.3` milik paket PHP, supaya
-tidak terkesan sudah setara padahal belum.
+sengaja dimulai dari `0.1.0`, bukan mengikuti versi paket PHP, supaya tidak
+terkesan sudah setara padahal belum.
 
 | Lapisan | Status |
 | --- | --- |
 | Support (Pacing, Throttle, Typing, Presence, PhoneNumber, Text, File, Envelope, Qr) | selesai |
+| Support (Rotation, Log, NumberCheck) | selesai |
 | Exceptions (14 kelas), Config, Session, Contracts | selesai |
 | Http (HttpResponse, HttpExecutor berbasis `fetch`) | selesai |
-| AbstractProvider (plan, retry, pacing, typing, jalur kirim berurutan) | selesai |
+| AbstractProvider (plan, retry, pacing, typing, logger, pemeriksaan nomor) | selesai |
 | **Fonnte**, **OpenWA**, **ApiMe**, **EvolutionAPI**, **Wuzapi**, **Wwebjs**, **Waxum** | **selesai** |
-| Client (registri provider, pemilihan `auto`, `notify()`) | selesai |
+| Client (registri provider, pemilihan `auto`, `notify()`, `checkNumbers()`, rotasi batch) | selesai |
 
-Seluruh lapisan versi PHP sudah diporting. Yang belum ada hanyalah hal-hal yang
-memang tidak dibawa dari sana — mis. integrasi framework CodeIgniter/Laravel,
-karena SDK ini sengaja tidak terikat framework.
+Seluruh lapisan versi PHP — sampai `0.12.0` — sudah diporting. Yang belum ada
+hanyalah hal-hal yang memang tidak dibawa dari sana — mis. integrasi framework
+CodeIgniter/Laravel, karena SDK ini sengaja tidak terikat framework.
 
 ## Perbedaan yang disengaja dari versi PHP
 
@@ -151,8 +259,12 @@ karena SDK ini sengaja tidak terikat framework.
 - **`Client::config()` dan `Client::http()` menjadi properti `client.config` dan
   `client.http`.** Sebabnya sama; di sini tidak ada nama yang bergeser, hanya
   bentuk pemanggilannya.
+- **Logger adalah satu method `log()`, bukan delapan method PSR-3.** Yang dipakai
+  SDK hanya `log(level, message, context)`, dan itu yang dimiliki semua pustaka
+  logger JavaScript. Menyalin kedelapan method berarti memaksa setiap logger
+  buatan pemanggil menulis tujuh method yang tidak pernah dipanggil.
 
-Selain empat itu, perilakunya dijaga setia — termasuk detail semantik PHP yang
+Selain lima itu, perilakunya dijaga setia — termasuk detail semantik PHP yang
 mudah terlewat (`is_numeric(true) === false`, `"0"` dianggap salah oleh
 `filter_var`, `rtrim($url, '/')` membuang semua garis miring, dan seterusnya).
 
@@ -160,9 +272,10 @@ mudah terlewat (`is_numeric(true) === false`, `"0"` dianggap salah oleh
 
 ```bash
 bun install
-bun test              # 504 tes paritas + integrasi
+bun test              # 574 tes paritas + integrasi
 bun run typecheck     # app, worker, dan pustaka
 bun run build:lib     # keluaran npm ke dist-lib/
+bun run verify:package
 bun run dev           # playground di http://localhost:5173
 ```
 
@@ -187,10 +300,10 @@ menyentuh jaringan, halamannya gagal alih-alih benar-benar menembak gateway.
 ```
 src/lib/sikuwa/          pustaka (tanpa dependensi runtime)
   internal/scalar.ts     semantik tipe longgar PHP (is_numeric, FILTER_VALIDATE_BOOLEAN, …)
-  support/               modul murni: pacing, throttle, typing, presence, file, …
+  support/               modul murni: pacing, throttle, typing, presence, file, rotation, log, …
   http/                  transport berbasis fetch yang bisa disuntik
   exceptions/            seluruh kelas exception
-  config.ts, session.ts
+  config.ts, session.ts, number-check.ts
   contracts/whatsapp.ts  antarmuka yang harus dipenuhi setiap gateway
   providers/             AbstractProvider + tujuh gateway (fonnte/, openwa/, apime/, …)
   index.ts               permukaan publik

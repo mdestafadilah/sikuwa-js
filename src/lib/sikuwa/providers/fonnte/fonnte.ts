@@ -8,11 +8,13 @@ import {
 import type { HttpExecutor, MultipartPart } from '../../http/http-executor';
 import type { HttpResponse } from '../../http/http-response';
 import { isEmpty, toScalarString } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import { Session } from '../../session';
 import type { JsonObject } from '../../support/envelope';
 import { File } from '../../support/file';
 import { PhoneNumber } from '../../support/phone-number';
 import { Presence } from '../../support/presence';
+import { Text } from '../../support/text';
 import { AbstractProvider } from '../abstract-provider';
 import { FONNTE_DEFAULT_URL, FONNTE_NAME } from './constants';
 import { FonnteBulkMessage } from './fonnte-bulk-message';
@@ -43,6 +45,15 @@ export class Fonnte extends AbstractProvider {
   static readonly NAME = FONNTE_NAME;
 
   static readonly DEFAULT_URL = FONNTE_DEFAULT_URL;
+
+  /**
+   * Batas nomor per panggilan `/validate`.
+   *
+   * Fonnte menolak lebih dari 500 nomor sekaligus, jadi daftar yang lebih
+   * panjang dipecah — dan tiap potongan diulang sendiri-sendiri bila kena
+   * batas laju.
+   */
+  private static readonly MAX_VALIDATE = 500;
 
   private readonly urlApi: string;
 
@@ -165,6 +176,48 @@ export class Fonnte extends AbstractProvider {
   }
 
   /**
+   * Periksa nomor lewat `POST /validate`, maksimal 500 nomor per panggilan.
+   *
+   * Balasannya dua daftar — `registered` dan `not_registered` — bukan satu
+   * entri per nomor seperti gateway lain. Karena itu nomor dari kedua daftar
+   * dinormalkan lagi di sini: Fonnte membalas nomornya seperti yang dikirim,
+   * dan bentuk yang sedikit berbeda akan membuat nomor itu tampak "tidak
+   * terperiksa" padahal gateway sudah menjawabnya.
+   *
+   * Percobaan ulang dilakukan **per potongan**, bukan membungkus seluruh
+   * method: potongan yang sudah dijawab tidak perlu ditanyakan lagi.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    const results: Record<string, boolean> = {};
+    const raw: JsonObject[] = [];
+
+    for (let i = 0; i < numbers.length; i += Fonnte.MAX_VALIDATE) {
+      const chunk = numbers.slice(i, i + Fonnte.MAX_VALIDATE);
+
+      const body = await this.withRetry(async () =>
+        this.accepted(
+          await this.http.post(
+            `${this.deviceBase}/validate`,
+            // Nomornya sudah berbentuk internasional, jadi `countryCode` tidak
+            // lagi mengubah apa pun — ia hanya ikut karena dokumentasinya
+            // menandainya sebagai parameter resmi.
+            { target: chunk.join(','), countryCode: PhoneNumber.COUNTRY_CODE },
+            this.authHeaders(),
+          ),
+          'pemeriksaan nomor',
+        ),
+      );
+
+      raw.push(body);
+
+      for (const number of numberList(body['registered'])) results[number] = true;
+      for (const number of numberList(body['not_registered'])) results[number] = false;
+    }
+
+    return new NumberCheck(Fonnte.NAME, results, {}, raw);
+  }
+
+  /**
    * Header Device API Fonnte, yang memakai account token.
    */
   private accountHeaders(): Record<string, string> {
@@ -217,10 +270,11 @@ export class Fonnte extends AbstractProvider {
    *         level log.
    */
   async sendMessage(message: MessageInput): Promise<string> {
-    const items = this.plan(message);
+    const guard = await this.guardNumbers(this.plan(message));
+    const items = guard.items;
 
     if (items.length === 0) {
-      return 'Tidak ada pesan untuk dikirim';
+      return this.noRecipients(guard.skipped);
     }
 
     const payload = this.compose(() => new FonnteBulkMessage(items).toJson());
@@ -233,8 +287,9 @@ export class Fonnte extends AbstractProvider {
     // datang, dan itu lebih buruk daripada tanpa indikator.
     await this.announceTyping(items[0] ?? null);
 
-    return this.sent(
-      await this.http.post(this.urlApi, { data: payload }, this.authHeaders()),
+    return (
+      this.sent(await this.http.post(this.urlApi, { data: payload }, this.authHeaders())) +
+      this.skippedNote(guard.skipped)
     );
   }
 
@@ -381,4 +436,25 @@ export class Fonnte extends AbstractProvider {
 
     return detail !== '' ? `Sukses: ${detail}` : 'Sukses';
   }
+}
+
+/**
+ * Nomor-nomor dari salah satu daftar balasan Fonnte.
+ *
+ * Tiap entri dinormalkan lebih dulu: Fonnte membalas nomornya seperti yang
+ * dikirim, dan bentuk yang sedikit berbeda akan membuat nomor itu tampak
+ * "tidak terperiksa" padahal gateway sudah menjawabnya.
+ */
+function numberList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  const list: string[] = [];
+
+  for (const item of value) {
+    const number = PhoneNumber.normalize(Text.of(item));
+
+    if (number !== '') list.push(number);
+  }
+
+  return list;
 }

@@ -2,11 +2,13 @@ import type { Config, ConfigOptions } from '../../config';
 import type { MessageInput } from '../../contracts/whatsapp';
 import { ConfigurationException } from '../../exceptions';
 import type { HttpExecutor } from '../../http/http-executor';
-import { toScalarString } from '../../internal/scalar';
+import { isArrayLike, toScalarString } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import { Session } from '../../session';
 import type { File } from '../../support/file';
 import { PhoneNumber } from '../../support/phone-number';
 import type { Presence } from '../../support/presence';
+import { Text } from '../../support/text';
 import { AbstractProvider } from '../abstract-provider';
 import { OPENWA_DEFAULT_URL, OPENWA_NAME } from './constants';
 import { OpenWABulkMessage } from './openwa-bulk-message';
@@ -118,6 +120,51 @@ export class OpenWA extends AbstractProvider {
   }
 
   /**
+   * Periksa nomor satu per satu: `GET …/contacts/check/{number}`.
+   *
+   * OpenWA tidak punya endpoint batch, jadi daftarnya diulang — satu request
+   * untuk tiap nomor. Endpoint ini juga menuntut API key berperan
+   * **operator**; kunci baca biasa ditolak HTTP 403. Setiap panggilan adalah
+   * pertanyaan keluar tentang pihak ketiga, jadi jangan dipakai menyapu daftar
+   * besar tanpa jeda.
+   *
+   * Percobaan ulang dilakukan **per nomor**, bukan membungkus seluruh daftar:
+   * mengulang dari awal akan menanyakan ulang nomor yang sudah dijawab, dan
+   * pada daftar panjang hampir pasti menabrak batas laju yang sama lagi.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    const sessionId = this.requireConfigured(this.sessionId, 'WHATSAPP_SESSION');
+
+    const results: Record<string, boolean> = {};
+    const ids: Record<string, string> = {};
+    const raw: unknown[] = [];
+
+    for (const number of numbers) {
+      const body = await this.withRetry(() =>
+        this.getJson(
+          `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}` +
+            `/contacts/check/${encodeURIComponent(number)}`,
+        ),
+      );
+
+      raw.push(body);
+
+      // Sebagian versi membungkus balasannya sebagai `{success, data}`,
+      // sebagian mengembalikan objeknya langsung — sama seperti endpoint sesi
+      // yang lain.
+      const data = isArrayLike(body['data']) ? body['data'] : body;
+
+      results[number] = data['exists'] === true;
+
+      const whatsappId = Text.of(data['whatsappId']);
+
+      if (whatsappId !== '') ids[number] = whatsappId;
+    }
+
+    return new NumberCheck(OpenWA.NAME, results, ids, raw);
+  }
+
+  /**
    * Kirim pesan lewat OpenWA.
    *
    * Jeda antar pesan di `send-bulk` diisi dari `delay` pesan **kedua**, atau
@@ -130,10 +177,11 @@ export class OpenWA extends AbstractProvider {
    * jadi jeda yang diminta di sini adalah nilai tengahnya, bukan angka pasti.
    */
   async sendMessage(message: MessageInput): Promise<string> {
-    const items = this.plan(message);
+    const guard = await this.guardNumbers(this.plan(message));
+    const items = guard.items;
 
     if (items.length === 0) {
-      return 'Tidak ada pesan untuk dikirim';
+      return this.noRecipients(guard.skipped);
     }
 
     this.requireConfigured(this.sessionId, 'WHATSAPP_SESSION');
@@ -155,9 +203,15 @@ export class OpenWA extends AbstractProvider {
 
     const first = bulk.first();
 
-    return bulk.count() === 1 && first !== null
-      ? this.sendText(first)
-      : this.sendBulk(bulk);
+    const hasil =
+      bulk.count() === 1 && first !== null
+        ? await this.sendText(first)
+        : await this.sendBulk(bulk);
+
+    // Catatannya ditempel di luar: batchnya sendiri menghitung dari item yang
+    // tersisa, jadi tanpa catatan ini pemanggil melihat "2/2" untuk daftar
+    // yang ia kirim berisi tiga nomor.
+    return hasil + this.skippedNote(guard.skipped);
   }
 
   /**

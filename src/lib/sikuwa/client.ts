@@ -1,11 +1,14 @@
 import { Config, type ConfigOptions } from './config';
 import type { MessageInput, OutgoingMessage, TypingRequest } from './contracts/whatsapp';
 import {
+  ApiException,
   ConfigurationException,
   UnknownProviderException,
   WhatsappException,
 } from './exceptions';
 import { HttpExecutor, type FetchLike } from './http/http-executor';
+import { isArrayLike } from './internal/scalar';
+import type { NumberCheck } from './number-check';
 import type { AbstractProvider } from './providers/abstract-provider';
 import { ApiMe } from './providers/apime/apime';
 import { EvolutionAPI } from './providers/evolution-api/evolution-api';
@@ -15,6 +18,7 @@ import { Waxum } from './providers/waxum/waxum';
 import { Wwebjs } from './providers/wwebjs/wwebjs';
 import { Wuzapi } from './providers/wuzapi/wuzapi';
 import type { Session } from './session';
+import { Log } from './support/log';
 
 /**
  * Opsi `Client`, yaitu opsi `Config` ditambah cara menyuntikkan transport.
@@ -241,8 +245,30 @@ export class Client {
    *   typing: { speed: 8, max: 30 },
    * });
    * ```
+   *
+   * Satu batch bisa juga dibagi ke beberapa gateway sekaligus lewat
+   * `WHATSAPP_ROTATE` — hanya berguna bersama `provider = auto`, karena satu
+   * gateway yang dipilih tetap tidak punya apa pun untuk dibagi:
+   *
+   * ```ts
+   * // .env: WHATSAPP_PROVIDER=auto, WHATSAPP_ROTATE=1, tiga token terisi
+   * await client.send({ messages: seratusPesan });
+   * // Sukses, 100/100 pesan terkirim lewat 3 gateway (Fonnte 34, OpenWA 33, Wuzapi 33)
+   * ```
    */
   async send(message: MessageInput): Promise<string> {
+    // Rotasi hanya menyentuh bentuk daftar: satu pesan tidak punya apa pun
+    // untuk dibagi, dan jalur lamanya sudah benar. Saklarnya diperiksa lebih
+    // dulu supaya selama ia mati tidak ada satu pun pekerjaan tambahan di
+    // jalur kirim.
+    if (this.config.rotate().isEnabled() && typeof message !== 'string') {
+      const batch = Client.batchOf(message);
+
+      if (batch !== null && batch.length > 1) {
+        return this.sendAcrossGateways(message, batch);
+      }
+    }
+
     return this.provider().sendMessage(message);
   }
 
@@ -325,6 +351,32 @@ export class Client {
   }
 
   /**
+   * Periksa nomor mana yang terdaftar di WhatsApp.
+   *
+   * Berguna untuk menyaring daftar tujuan sebelum mengirim: WhatsApp tidak
+   * memberi tahu apakah sebuah nomor bisa dihubungi sebelum pesannya benar-
+   * benar dikirim, dan menembak nomor yang tidak pernah ada adalah pemicu
+   * pemblokiran yang paling sering.
+   *
+   * ```ts
+   * const hasil = await client.checkNumbers(['081234567890', '089876543210']);
+   *
+   * for (const nomor of hasil.registered()) {
+   *   await client.send({ destination: nomor, message: 'Halo' });
+   * }
+   * ```
+   *
+   * Seperti {@link provider}, gateway dipilih ulang pada tiap pemanggilan —
+   * untuk `provider = auto` itu berarti undiannya diulang. Simpan instance
+   * gateway kalau pemeriksaan dan pengiriman harus mengenai gateway yang sama.
+   *
+   * @param numbers Satu nomor, atau daftar nomor.
+   */
+  async checkNumbers(numbers: string | string[]): Promise<NumberCheck> {
+    return this.provider().checkNumbers(numbers);
+  }
+
+  /**
    * Apakah notifikasi diaktifkan (`WA_NOTIFICATION`).
    *
    * SDK tidak menegakkannya sendiri — ini hanya pembacaan environment yang
@@ -386,6 +438,171 @@ export class Client {
    */
   async showQr(id?: string | null): Promise<Session> {
     return this.provider().showQr(id);
+  }
+
+  /**
+   * Daftar pesan bila panggilan ini berbentuk batch, atau null bila satu pesan.
+   *
+   * Bentuknya dikenali persis seperti `plan()` di tiap gateway: elemen pertama
+   * yang berupa array pesan. Elemen yang bukan pesan — kunci pengaturan seperti
+   * `pacing` yang ikut berdiri di daftar yang sama — tidak dihitung, supaya
+   * jumlah pesannya tidak meleset satu.
+   *
+   * Daftar yang isinya tidak lengkap dikembalikan sependek yang bisa dikenali,
+   * bukan ditolak di sini: yang berhak mengeluh soal pesan cacat adalah
+   * gateway-nya, dengan pesan yang menyebut posisinya.
+   */
+  private static batchOf(message: MessageInput): OutgoingMessage[] | null {
+    if (typeof message === 'string') return null;
+
+    const record = message as Record<string, unknown>;
+    const list: unknown = isArrayLike(record.messages) ? record.messages : message;
+    const items: unknown[] = Array.isArray(list)
+      ? list
+      : isArrayLike(list)
+        ? Object.values(list)
+        : [];
+
+    if (!isArrayLike(items[0])) return null;
+
+    return items.filter(
+      (item): item is OutgoingMessage =>
+        isArrayLike(item) &&
+        item['destination'] !== undefined &&
+        item['message'] !== undefined,
+    );
+  }
+
+  /**
+   * Kunci pengaturan tingkat panggilan yang harus ikut ke tiap potongan.
+   *
+   * Pemanggil menulisnya di amplop, jadi ia berlaku untuk seluruh batch — dan
+   * batch itu sekarang dipecah. Tanpa dipindahkan, pengaturan yang disebut
+   * pemanggil akan hilang diam-diam di potongan kedua dan seterusnya, yang
+   * justru bagian yang paling butuh dijeda.
+   */
+  private static envelopeSettings(message: MessageInput): Record<string, unknown> {
+    const settings: Record<string, unknown> = {};
+
+    if (typeof message === 'string') return settings;
+
+    const record = message as Record<string, unknown>;
+
+    for (const key of ['pacing', 'typing', 'throttle']) {
+      if (record[key] !== undefined && record[key] !== null) {
+        settings[key] = record[key];
+      }
+    }
+
+    return settings;
+  }
+
+  /**
+   * Kirim satu batch pesan teks lewat beberapa gateway sekaligus.
+   *
+   * Batch dibagi bergiliran setelah urutan gatewaynya diundi, lalu tiap potongan
+   * dikirim oleh gateway-nya sendiri — jadi gateway yang punya endpoint batch
+   * tetap mengirim potongannya dalam satu request.
+   *
+   * Tiga akibat yang perlu diketahui pemanggil, dan disebut apa adanya daripada
+   * disembunyikan:
+   *
+   * - **Urutan pesan tidak lagi menaik.** Potongan pertama dikirim habis
+   *   sebelum potongan kedua, jadi pesan ke-6 bisa tiba sebelum pesan ke-2.
+   *   Untuk pengiriman ke banyak tujuan ini tidak terasa; untuk rangkaian yang
+   *   urutannya berarti, jangan nyalakan rotasi.
+   * - **Jeda dan pagar laju dihitung per gateway.** Tiap gateway menerima
+   *   daftarnya sendiri, dan jedanya dihitung dari posisi di dalam daftar itu.
+   *   "Dua puluh pesan per menit" berarti dua puluh per gateway, bukan dua
+   *   puluh untuk seluruh batch.
+   * - **Kegagalan satu gateway tidak membatalkan yang lain.** Potongan yang
+   *   gagal dilaporkan bersama nama gatewaynya, dan exception-nya baru dilempar
+   *   setelah semua potongan dicoba.
+   */
+  private async sendAcrossGateways(
+    message: MessageInput,
+    batch: OutgoingMessage[],
+  ): Promise<string> {
+    const dipilih = this.config.provider();
+
+    if (dipilih === null || dipilih === undefined || dipilih === '') {
+      throw new ConfigurationException(
+        'WHATSAPP_PROVIDER belum diisi, dan tidak ada nama provider yang diberikan',
+      );
+    }
+
+    if (dipilih.toLowerCase() !== Client.AUTO) {
+      throw new ConfigurationException(
+        `WHATSAPP_ROTATE menyala, tetapi WHATSAPP_PROVIDER berisi '${dipilih}' — ` +
+          'satu gateway yang dipilih tetap tidak punya apa pun untuk dibagi. ' +
+          'Isi WHATSAPP_PROVIDER=auto, atau matikan WHATSAPP_ROTATE.',
+      );
+    }
+
+    const kandidat = Client.configured(this.config);
+
+    if (kandidat.length < 2) {
+      // Bukan kegagalan: mode auto tetap jalan dengan satu gateway, dan rotasi
+      // cuma tidak punya pilihan. Yang tidak boleh terjadi adalah pemanggil
+      // mengira batchnya sudah dibagi padahal tidak.
+      Log.write(
+        this.config.logger(),
+        'warning',
+        'WHATSAPP_ROTATE menyala, tetapi hanya satu gateway yang punya token — ' +
+          'seluruh batch dikirim lewat gateway itu saja',
+        { provider: kandidat[0] ?? null },
+      );
+
+      return this.provider().sendMessage(message);
+    }
+
+    const potongan = this.config.rotate().assign(batch.length, kandidat);
+    const pengaturan = Client.envelopeSettings(message);
+    const total = batch.length;
+    let terkirim = 0;
+    const dipakai: string[] = [];
+    const gagal: string[] = [];
+    let terakhir: WhatsappException | null = null;
+
+    for (const [nama, posisi] of Object.entries(potongan)) {
+      const isi = posisi.map((i) => batch[i]);
+
+      try {
+        await this.provider(nama).sendMessage({
+          ...pengaturan,
+          messages: isi,
+        } as unknown as MessageInput);
+
+        terkirim += isi.length;
+        dipakai.push(`${nama} ${isi.length}`);
+      } catch (error) {
+        if (!(error instanceof WhatsappException)) throw error;
+
+        terakhir = error;
+        gagal.push(`${nama}: ${error.message}`);
+      }
+    }
+
+    if (gagal.length > 0) {
+      // Angka di depan adalah yang **dipastikan** terkirim: potongan yang gagal
+      // sebagian tidak menambah hitungannya, jadi laporannya meremehkan, bukan
+      // membesar-besarkan. Rincian tiap gateway ada di pesan kegagalannya
+      // sendiri.
+      const lewat = dipakai.length === 0 ? '' : ` lewat ${dipakai.length} gateway`;
+
+      throw new ApiException(
+        `${terkirim}/${total} pesan terkirim${lewat}. Gagal: ${gagal.join(' | ')}`,
+        terakhir instanceof ApiException ? terakhir.getStatus() : 0,
+        null,
+        null,
+        terakhir,
+      );
+    }
+
+    return (
+      `Sukses, ${terkirim}/${total} pesan terkirim lewat ${dipakai.length} gateway ` +
+      `(${dipakai.join(', ')})`
+    );
   }
 
   /**

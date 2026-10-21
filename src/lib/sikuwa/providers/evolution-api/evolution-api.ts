@@ -2,10 +2,13 @@ import type { Config, ConfigOptions } from '../../config';
 import type { MessageInput } from '../../contracts/whatsapp';
 import type { HttpExecutor } from '../../http/http-executor';
 import { isArrayLike, toInt, toScalarString } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import { Session } from '../../session';
 import type { JsonObject } from '../../support/envelope';
 import type { File } from '../../support/file';
+import { PhoneNumber } from '../../support/phone-number';
 import type { Presence } from '../../support/presence';
+import { Text } from '../../support/text';
 import {
   AbstractProvider,
   type PlannedMessage,
@@ -117,6 +120,51 @@ export class EvolutionAPI extends AbstractProvider {
       await this.getJson(`${this.baseUrl}/instance/connect/${encodeURIComponent(instanceName)}`),
       instanceName,
     );
+  }
+
+  /**
+   * Periksa seluruh daftar dalam satu panggilan:
+   * `POST /chat/whatsappNumbers/{instance}`.
+   *
+   * Balasannya array `OnWhatsAppDto` — `{jid, exists, number, name?}` — satu
+   * entri per nomor yang diminta. `jid` disimpan untuk pemanggil yang
+   * membutuhkannya; entri yang tidak mengisi `number` dicocokkan lewat JID-nya,
+   * karena keduanya membawa nomor yang sama.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    const instanceName = this.requireConfigured(this.instanceName, 'WHATSAPP_INSTANCE');
+
+    // Seluruh daftar dalam satu request, jadi percobaan ulangnya membungkus
+    // request itu — tidak ada potongan yang bisa diulang sendiri-sendiri.
+    const body = await this.withRetry(() =>
+      this.postJson(
+        `${this.baseUrl}/chat/whatsappNumbers/${encodeURIComponent(instanceName)}`,
+        { numbers },
+      ),
+    );
+
+    const results: Record<string, boolean> = {};
+    const ids: Record<string, string> = {};
+
+    const entries = Array.isArray(body) ? body : [];
+
+    for (const entry of entries) {
+      if (!isArrayLike(entry)) continue;
+
+      const number = PhoneNumber.normalize(
+        Text.first(entry['number'], entry['jid']),
+      );
+
+      if (number === '') continue;
+
+      results[number] = entry['exists'] === true;
+
+      const jid = Text.of(entry['jid']);
+
+      if (jid !== '') ids[number] = jid;
+    }
+
+    return new NumberCheck(EvolutionAPI.NAME, results, ids, { whatsappNumbers: body });
   }
 
   /**

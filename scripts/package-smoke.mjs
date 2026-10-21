@@ -18,10 +18,13 @@ import {
   Config,
   EvolutionAPI,
   Fonnte,
+  Log,
+  NumberCheck,
   OpenWA,
   Pacing,
   PhoneNumber,
   RateLimitException,
+  Rotation,
   Typing,
   Waxum,
   Wwebjs,
@@ -38,6 +41,20 @@ const server = http.createServer((req, res) => {
     received.push({ method: req.method, url: req.url, headers: req.headers, body });
 
     res.writeHead(200, { "Content-Type": "application/json" });
+
+    // Satu-satunya endpoint yang bentuk balasannya berbeda: pemeriksaan nomor.
+    if (req.url === "/validate") {
+      res.end(
+        JSON.stringify({
+          status: true,
+          registered: ["6281234567890"],
+          not_registered: ["6289876543210"],
+        }),
+      );
+
+      return;
+    }
+
     res.end(JSON.stringify({ status: true, detail: "2 pesan terkirim" }));
   });
 });
@@ -80,6 +97,9 @@ try {
     Pacing,
     PhoneNumber,
     Typing,
+    NumberCheck,
+    Rotation,
+    Log,
   })) {
     check(`ekspor ${name}`, typeof value, "function");
   }
@@ -177,6 +197,40 @@ try {
 
   check("Client memakai URL yang dikonfigurasi", viaClient?.method, "POST");
   check("Client memakai token per-provider", viaClient?.headers["authorization"], "token-client");
+
+  // 7. Pemeriksaan nomor — jalur yang sama sekali baru, jadi ia harus
+  //    dibuktikan dari paket yang benar-benar terpasang, bukan hanya di repo.
+  const hasil = await fonnte.checkNumbers(["081234567890", "089876543210"]);
+
+  check("checkNumbers menormalkan nomor", hasil.isRegistered("081234567890"), true);
+  check("checkNumbers melaporkan yang tidak terdaftar", hasil.unregistered(), [
+    "6289876543210",
+  ]);
+  check("NumberCheck.registered", hasil.registered(), ["6281234567890"]);
+  check("NumberCheck.toJson", hasil.toJson().startsWith("{"), true);
+
+  const validate = received.find((item) => item.url === "/validate");
+  const validateBody = new URLSearchParams(validate.body);
+
+  // Daftarnya dikirim dalam satu request, sudah berbentuk internasional.
+  check("target pemeriksaan", validateBody.get("target"), "6281234567890,6289876543210");
+
+  // 8. Rotasi: aritmetikanya murni, tapi modulnya harus ikut terbit dan bisa
+  //    dimuat Node biasa.
+  const rotate = new Client({
+    provider: "auto",
+    tokens: { Fonnte: "a", OpenWA: "b" },
+    rotate: true,
+  });
+
+  check("rotate terbaca dari opsi", rotate.config.rotate().isEnabled(), true);
+  check(
+    "rotasi membagi rata",
+    Object.values(Rotation.fromConfig(true).assign(4, ["Fonnte", "OpenWA"])).map(
+      (bagian) => bagian.length,
+    ),
+    [2, 2],
+  );
 
   assert.ok(true);
 } finally {

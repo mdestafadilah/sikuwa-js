@@ -3,10 +3,13 @@ import type { MessageInput } from '../../contracts/whatsapp';
 import { ApiException, ConfigurationException } from '../../exceptions';
 import type { HttpExecutor } from '../../http/http-executor';
 import { isArrayLike, toInt, toScalarString } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import type { Session } from '../../session';
 import type { JsonObject } from '../../support/envelope';
 import { File } from '../../support/file';
+import { PhoneNumber } from '../../support/phone-number';
 import type { Presence } from '../../support/presence';
+import { Text } from '../../support/text';
 import {
   AbstractProvider,
   type PlannedMessage,
@@ -118,6 +121,46 @@ export class Wuzapi extends AbstractProvider {
     return WuzapiShowQr.fromResponse(
       this.requireSuccess(this.requireJson(body, response.status), response.status),
     );
+  }
+
+  /**
+   * Periksa nomor lewat `POST /user/check`.
+   *
+   * Body-nya `{"Phone":[…]}` dan balasannya `data.Users` — satu entri per
+   * nomor, dengan `IsInWhatsapp` sebagai jawabannya. wuzapi membalas HTTP 200
+   * bahkan saat menolak, jadi amplop `success`-nya yang diperiksa lebih dulu,
+   * sama seperti jalur lain di provider ini.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    // Seluruh daftar dalam satu request; percobaan ulangnya membungkus request
+    // itu beserta pemeriksaan amplopnya, sama seperti jalur kirim.
+    const body = await this.withRetry(async () =>
+      this.requireSuccess(await this.postJson(`${this.baseUrl}/user/check`, { Phone: numbers })),
+    );
+
+    const data = isArrayLike(body['data']) ? body['data'] : {};
+    const users = data['Users'];
+
+    const results: Record<string, boolean> = {};
+    const ids: Record<string, string> = {};
+
+    if (Array.isArray(users)) {
+      for (const entry of users) {
+        if (!isArrayLike(entry)) continue;
+
+        const number = PhoneNumber.normalize(Text.first(entry['Query'], entry['JID']));
+
+        if (number === '') continue;
+
+        results[number] = entry['IsInWhatsapp'] === true;
+
+        const jid = Text.of(entry['JID']);
+
+        if (jid !== '') ids[number] = jid;
+      }
+    }
+
+    return new NumberCheck(Wuzapi.NAME, results, ids, { 'user/check': body });
   }
 
   /**

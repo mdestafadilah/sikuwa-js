@@ -13,9 +13,11 @@ import {
 } from '../exceptions';
 import { HttpExecutor, type MultipartPart } from '../http/http-executor';
 import type { HttpResponse, JsonBody } from '../http/http-response';
+import { NumberCheck } from '../number-check';
 import type { Session } from '../session';
 import { isPlainObject, type JsonObject } from '../support/envelope';
 import { File } from '../support/file';
+import { Log } from '../support/log';
 import { PhoneNumber } from '../support/phone-number';
 import type { PacingSpec } from '../support/pacing';
 import { Presence } from '../support/presence';
@@ -194,6 +196,21 @@ export abstract class AbstractProvider implements Whatsapp {
   ): Promise<string>;
 
   /**
+   * Tanyakan ke gateway nomor mana yang terdaftar di WhatsApp.
+   *
+   * Sengaja abstrak: endpoint, bentuk body, dan amplop balasannya berbeda di
+   * tiap gateway — Fonnte mengirim daftar yang dipisah koma lalu membalas dua
+   * array (`registered`/`not_registered`), OpenWA dan Wwebjs memeriksa satu
+   * nomor per panggilan, Evolution API dan Waxum membalas daftar objek, wuzapi
+   * menaruh jawabannya di `data.Users`. Yang seragam adalah cara pemanggil
+   * bertanya, dan itu dirapikan di {@link checkNumbers} bersama `NumberCheck`.
+   *
+   * @param numbers Nomor yang sudah dinormalkan ke bentuk internasional tanpa
+   *                tanda plus.
+   */
+  protected abstract probeNumbers(numbers: string[]): Promise<NumberCheck>;
+
+  /**
    * Apakah gateway ini sudah menunggu dan membersihkan indikatornya sendiri.
    *
    * Evolution API mengirim `composing`, menunggu `delay` milidetik, lalu
@@ -252,6 +269,37 @@ export abstract class AbstractProvider implements Whatsapp {
       destination.trim(),
       Presence.from(typeof state === 'string' ? state : '', message.duration ?? null),
     );
+  }
+
+  /**
+   * Periksa nomor mana yang terdaftar di WhatsApp.
+   *
+   * Semua yang bisa diseragamkan dikerjakan di sini — menerima satu nomor atau
+   * daftar, membuang yang kosong, menghapus duplikat, dan menormalkan tiap
+   * nomor ke bentuk internasional tanpa tanda plus. Provider hanya menerima
+   * daftar nomor yang sudah bersih, sehingga tidak ada dari tujuh gateway yang
+   * perlu mengulang aturan yang sama.
+   *
+   * Deduplikasi bukan sekadar kerapian: memeriksa nomor yang sama dua kali
+   * adalah traffic tambahan ke WhatsApp untuk jawaban yang sudah diketahui, dan
+   * pada Fonnte ia ikut memakan jatah 500 nomor per panggilan.
+   *
+   * ```ts
+   * const hasil = await client.checkNumbers('081234567890');
+   * hasil.isRegistered('081234567890');   // true/false
+   * ```
+   */
+  async checkNumbers(numbers: string | string[]): Promise<NumberCheck> {
+    const wanted = normalizeNumbers(numbers);
+
+    if (wanted.length === 0) {
+      throw new ConfigurationException(
+        'Gagal memeriksa nomor: sertakan minimal satu nomor, ' +
+          "mis. checkNumbers('081234567890') atau checkNumbers(['081234567890', '089876543210'])",
+      );
+    }
+
+    return this.probeNumbers(wanted);
   }
 
   /**
@@ -355,9 +403,10 @@ export abstract class AbstractProvider implements Whatsapp {
    * Kegagalan menampilkan indikator sengaja **tidak** menggagalkan
    * pengiriman, dan tidak menambah jeda apa pun. Mengirim pesan jauh lebih
    * penting daripada hiasannya, dan gateway yang tidak mengenal presence
-   * tidak boleh membuat pemanggil kehilangan pesannya. Karena SDK ini tidak
-   * punya logger, kegagalan itu senyap — kalau perlu diketahui, panggil
-   * {@link sendTyping} sendiri dan tangani exception-nya.
+   * tidak boleh membuat pemanggil kehilangan pesannya. Kegagalan itu dicatat
+   * ke logger kalau pemanggil memasangnya — lihat {@link log} — tetapi tetap
+   * tidak pernah dilempar. Kalau perlu ditangani sendiri, panggil
+   * {@link sendTyping} dan tangani exception-nya.
    */
   protected async announceTyping(
     item: TypingAnnouncement | null | undefined,
@@ -380,8 +429,17 @@ export abstract class AbstractProvider implements Whatsapp {
         Presence.from(Presence.COMPOSING, seconds),
       );
     } catch (error) {
-      if (error instanceof WhatsappException) return;
-      throw error;
+      if (!(error instanceof WhatsappException)) throw error;
+
+      // Dicatat, bukan dilempar: indikator yang gagal tidak boleh membuat
+      // pemanggil kehilangan pesannya.
+      this.log('warning', 'Indikator "sedang mengetik" gagal ditampilkan; pesannya tetap dikirim', {
+        provider: this.getProvider(),
+        destination: destination.trim(),
+        error: error.message,
+      });
+
+      return;
     }
 
     // Gateway yang menunggu dan membersihkan indikatornya sendiri sudah
@@ -389,6 +447,21 @@ export abstract class AbstractProvider implements Whatsapp {
     if (!this.presenceBlocks()) {
       await this.pause(seconds);
     }
+  }
+
+  /**
+   * Catat satu kejadian ke logger pemanggil, bila ada.
+   *
+   * Selama pemanggil tidak memasang logger, seluruh method ini tidak melakukan
+   * apa-apa — sehingga perilakunya sama persis seperti sebelum logger ada.
+   *
+   * Isinya ada di `Log.write()`, bukan di sini: `Client` juga mencatat satu
+   * kejadian (rotasi gateway yang tidak punya cukup kandidat), dan aturan
+   * "logger tidak boleh menggagalkan pengiriman" tidak boleh punya dua salinan
+   * yang bisa berbeda diam-diam.
+   */
+  protected log(level: string, message: string, context: Record<string, unknown> = {}): void {
+    Log.write(this.config.logger(), level, message, context);
   }
 
   /**
@@ -541,6 +614,139 @@ export abstract class AbstractProvider implements Whatsapp {
   }
 
   /**
+   * Buang tujuan yang dipastikan tidak terdaftar, bila setelannya menyala.
+   *
+   * Dipanggil tepat setelah {@link plan} di setiap jalur kirim teks, sebelum
+   * request pengiriman apa pun. Selama `check_numbers` mati, method ini
+   * mengembalikan `items` apa adanya dan tidak menyentuh jaringan — itulah yang
+   * membuat jalur kirimnya tidak berubah sama sekali tanpa fiturnya.
+   *
+   * Hanya tujuan yang **dipastikan** tidak terdaftar yang dibuang. Nomor yang
+   * tidak disebut jawabannya berarti "belum diperiksa", bukan "tidak ada", dan
+   * membuangnya akan menghilangkan pesan yang sebenarnya baik-baik saja — lihat
+   * `NumberCheck.unregistered()`.
+   *
+   * Tujuan yang sudah berbentuk JID (grup, atau JID yang dikirim pemanggil
+   * sendiri) tidak ikut diperiksa: tidak ada nomor yang bisa ditanyakan untuk
+   * itu, dan menormalkannya justru merusak bentuknya.
+   *
+   * @param items Hasil {@link plan}.
+   * @returns `skipped` memuat tujuan seperti yang ditulis pemanggil, supaya
+   *          laporannya bisa ia kenali kembali.
+   */
+  protected async guardNumbers(
+    items: PlannedMessage[],
+  ): Promise<{ items: PlannedMessage[]; skipped: string[] }> {
+    if (!this.config.checkNumbers() || items.length === 0) {
+      return { items, skipped: [] };
+    }
+
+    const numbers: Record<string, true> = {};
+
+    for (const item of items) {
+      const number = checkableNumber(item.destination);
+
+      if (number !== '') numbers[number] = true;
+    }
+
+    // Tidak ada satu pun tujuan yang bisa diperiksa — mis. semuanya grup.
+    if (Object.keys(numbers).length === 0) {
+      return { items, skipped: [] };
+    }
+
+    let hasil: NumberCheck;
+
+    try {
+      hasil = await this.checkNumbers(Object.keys(numbers));
+    } catch (error) {
+      // Sengaja tidak dilempar: pemeriksaan yang gagal tidak boleh menahan
+      // pesan, sama seperti indikator ketik yang gagal. Satu timeout tidak
+      // boleh menghentikan seluruh batch.
+      //
+      // Tangkapannya sengaja selebar ini, bukan hanya timeout. Kasus yang paling
+      // sering justru kredensial: endpoint cek OpenWA menuntut kunci berperan
+      // operator, dan kunci baca biasa ditolak HTTP 403. Kalau penolakan itu
+      // dilempar, menyalakan setelan ini justru mematikan seluruh pengiriman
+      // pada akun yang cuma punya kunci baca — padahal kirimnya sendiri
+      // baik-baik saja. Yang menentukan sah tidaknya konfigurasi adalah jalur
+      // kirim, bukan penyaring ini.
+      if (!(error instanceof WhatsappException)) throw error;
+
+      this.log('warning', 'Pemeriksaan nomor sebelum kirim gagal; pesan tetap dikirim', {
+        provider: this.getProvider(),
+        error: error.message,
+      });
+
+      return { items, skipped: [] };
+    }
+
+    const unregistered = hasil.unregistered();
+
+    if (unregistered.length === 0) {
+      return { items, skipped: [] };
+    }
+
+    const dropped = new Set(unregistered);
+    const remaining: PlannedMessage[] = [];
+    const skipped: string[] = [];
+
+    for (const item of items) {
+      const number = checkableNumber(item.destination);
+
+      if (number !== '' && dropped.has(number)) {
+        skipped.push(item.destination);
+        continue;
+      }
+
+      remaining.push(item);
+    }
+
+    if (skipped.length > 0) {
+      this.log('warning', 'Tujuan yang dipastikan tidak terdaftar dilewati', {
+        provider: this.getProvider(),
+        diperiksa: Object.keys(numbers).length,
+        dilewati: skipped.length,
+      });
+    }
+
+    return { items: remaining, skipped };
+  }
+
+  /**
+   * Catatan tentang tujuan yang dilewati, untuk ditempel di hasil pengiriman.
+   *
+   * Daftarnya dipotong supaya satu batch besar tidak membanjiri hasil dengan
+   * ratusan nomor: yang perlu diketahui pemanggil adalah berapa banyak, plus
+   * beberapa contoh untuk diperiksa.
+   */
+  protected skippedNote(skipped: string[]): string {
+    if (skipped.length === 0) return '';
+
+    const contoh = skipped.slice(0, 5);
+    const sisa = skipped.length - contoh.length;
+
+    return ` (${skipped.length} tujuan dilewati karena tidak terdaftar: ${contoh.join(', ')}${
+      sisa > 0 ? ` dan ${sisa} lainnya` : ''
+    })`;
+  }
+
+  /**
+   * Hasil ketika tidak ada satu pun tujuan yang layak dikirimi.
+   *
+   * Dibedakan dari "tidak ada pesan untuk dikirim": pemanggil yang mengirim
+   * daftar berisi lalu menerima balasan itu perlu tahu bahwa pesannya memang
+   * ada, tetapi semuanya tersaring — bukan bahwa daftarnya kosong.
+   */
+  protected noRecipients(skipped: string[]): string {
+    if (skipped.length === 0) return 'Tidak ada pesan untuk dikirim';
+
+    return (
+      `Tidak ada pesan terkirim: ${skipped.length} tujuan dilewati karena ` +
+      'tidak terdaftar di WhatsApp'
+    );
+  }
+
+  /**
    * Nomor tujuan yang muncul lebih dari sekali dalam satu batch.
    *
    * Mengirim beberapa pesan ke satu nomor dalam waktu singkat adalah pola
@@ -583,11 +789,11 @@ export abstract class AbstractProvider implements Whatsapp {
    * Peringatkan bila satu batch mengirim ke nomor yang sama lebih dari sekali.
    *
    * Sengaja **tidak** dipanggil dari jalur kirim. Mengirim dua pesan ke satu
-   * orang adalah hal yang sah — mis. teks lalu berkas — dan SDK ini tidak
-   * punya logger, sehingga peringatan otomatis hanya akan muncul sebagai
-   * kebisingan yang tidak bisa ditangkap pemanggil dengan rapi. Pemanggil
-   * yang ingin memeriksanya memanggil {@link repeatedTargets} sendiri dan
-   * memutuskan apa yang pantas dilakukan.
+   * orang adalah hal yang sah — mis. teks lalu berkas — sehingga peringatan
+   * otomatis akan lebih sering salah daripada berguna, dan pemanggil yang
+   * memasang logger pun tidak punya cara mematikannya. Pemanggil yang ingin
+   * memeriksanya memanggil {@link repeatedTargets} sendiri dan memutuskan apa
+   * yang pantas dilakukan.
    */
   protected warnAboutRepeatedTargets(messages: OutgoingMessage[]): void {
     const repeated = this.repeatedTargets(messages);
@@ -756,9 +962,11 @@ export abstract class AbstractProvider implements Whatsapp {
    *   seperti itu lebih baik diserahkan ke pemanggil, yang tahu jadwalnya.
    *
    * Dijeda dengan {@link pause} supaya test tidak benar-benar menunggu.
-   * Bila percobaan terakhir tetap gagal, exception terakhir dilempar apa
-   * adanya — pesannya sudah memuat `Retry-After`, jadi pemanggil tetap bisa
-   * mengatur ulang jadwalnya sendiri.
+   * Setiap percobaan ulang dicatat ke logger — kalau pemanggil memasangnya —
+   * karena tanpa catatan itu penolakan yang berhasil diatasi tidak terlihat
+   * sama sekali dari luar. Bila percobaan terakhir tetap gagal, exception
+   * terakhir dilempar apa adanya — pesannya sudah memuat `Retry-After`, jadi
+   * pemanggil tetap bisa mengatur ulang jadwalnya sendiri.
    */
   protected async withRetry<T>(attempt: () => Promise<T>): Promise<T> {
     let remaining = this.config.retries();
@@ -776,6 +984,14 @@ export abstract class AbstractProvider implements Whatsapp {
         }
 
         remaining--;
+
+        this.log('warning', 'Gateway menolak sementara; mencoba ulang setelah jeda', {
+          provider: this.getProvider(),
+          status: error.getStatus(),
+          retry_after: wait,
+          remaining,
+        });
+
         await this.pause(wait);
       }
     }
@@ -966,10 +1182,13 @@ export abstract class AbstractProvider implements Whatsapp {
     send: (message: T) => Promise<string>,
     label: (message: T) => string,
   ): Promise<string> {
-    const items = this.plan(message);
+    // Penyaringan nomor dilakukan sebelum apa pun disusun, supaya tujuan yang
+    // tidak terdaftar tidak ikut memakan satu request pengiriman.
+    const guard = await this.guardNumbers(this.plan(message));
+    const items = guard.items;
 
     if (items.length === 0) {
-      return 'Tidak ada pesan untuk dikirim';
+      return this.noRecipients(guard.skipped);
     }
 
     const prepared = this.compose(() => build(items));
@@ -980,10 +1199,15 @@ export abstract class AbstractProvider implements Whatsapp {
       // Lewat withRetry() juga: satu pesan adalah kasus paling sering
       // dipakai, jadi justru di situ percobaan ulang paling terasa.
       // sendSequentially() di bawah punya jalurnya sendiri.
-      return this.withRetry(() => send(prepared[0].message));
+      return (await this.withRetry(() => send(prepared[0].message))) +
+        this.skippedNote(guard.skipped);
     }
 
-    return this.sendSequentially(prepared, send, label);
+    // Catatannya ditempel di luar: sendSequentially() menghitung dari item
+    // yang tersisa, jadi tanpa catatan ini pemanggil melihat "2/2" untuk
+    // daftar yang ia kirim berisi tiga nomor.
+    return (await this.sendSequentially(prepared, send, label)) +
+      this.skippedNote(guard.skipped);
   }
 
   /**
@@ -1116,6 +1340,44 @@ function asJsonObject(body: JsonBody | null): JsonObject | null {
   if (body === null) return null;
 
   return Array.isArray(body) ? (body as unknown as JsonObject) : body;
+}
+
+/**
+ * Rapikan masukan `checkNumbers()` menjadi daftar nomor yang bersih.
+ *
+ * Nilai dikembalikan sebagai **nilai** array, bukan kunci objek, supaya tiap
+ * nomor tetap berupa string — kunci objek yang berbentuk angka akan berubah
+ * menjadi angka saat diiterasi di sebagian jalur, dan provider lalu mengirim
+ * angka, bukan nomor.
+ */
+function normalizeNumbers(numbers: string | string[]): string[] {
+  const list = Array.isArray(numbers) ? numbers : [numbers];
+  const clean: string[] = [];
+
+  for (const number of list) {
+    if (!isScalar(number)) continue;
+
+    const normalized = PhoneNumber.normalize(toScalarString(number));
+
+    if (normalized !== '' && !clean.includes(normalized)) {
+      clean.push(normalized);
+    }
+  }
+
+  return clean;
+}
+
+/**
+ * Nomor yang bisa ditanyakan ke gateway, atau string kosong bila tidak ada.
+ *
+ * Tujuan berbentuk JID tidak punya padanan nomor: grup memang bukan nomor, dan
+ * JID yang dikirim pemanggil sendiri bisa saja bersufiks lain daripada yang
+ * diharapkan gateway.
+ */
+function checkableNumber(destination: string): string {
+  if (destination === '' || destination.includes('@')) return '';
+
+  return PhoneNumber.normalize(destination);
 }
 
 /** Status HTTP yang aman diulang: 429 dan 503. */

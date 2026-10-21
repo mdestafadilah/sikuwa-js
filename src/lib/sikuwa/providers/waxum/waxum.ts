@@ -2,10 +2,13 @@ import type { Config, ConfigOptions } from '../../config';
 import type { MessageInput } from '../../contracts/whatsapp';
 import type { HttpExecutor } from '../../http/http-executor';
 import { isArrayLike, toScalarString } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import { Session } from '../../session';
 import type { JsonObject } from '../../support/envelope';
 import type { File } from '../../support/file';
+import { PhoneNumber } from '../../support/phone-number';
 import type { Presence } from '../../support/presence';
+import { Text } from '../../support/text';
 import {
   AbstractProvider,
   type PlannedMessage,
@@ -153,6 +156,46 @@ export class Waxum extends AbstractProvider {
     }
 
     return WaxumShowQr.fromResponse(body, sessionId);
+  }
+
+  /**
+   * Periksa seluruh daftar dalam satu panggilan:
+   * `POST /api/v1/sessions/{id}/contacts/check`.
+   *
+   * Body-nya `{"phones":[…]}` dan balasannya
+   * `{"results":[{"phone","exists","jid"}]}` — satu entri per nomor.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    const sessionId = this.requireConfigured(this.sessionId, 'WHATSAPP_SESSION');
+
+    // Seluruh daftar dalam satu request, jadi percobaan ulangnya membungkus
+    // request itu — tidak ada potongan yang bisa diulang sendiri-sendiri.
+    const body = await this.withRetry(() =>
+      this.postJson(this.sessionUrl(sessionId, 'contacts/check'), { phones: numbers }),
+    );
+
+    const entries = body['results'];
+
+    const results: Record<string, boolean> = {};
+    const ids: Record<string, string> = {};
+
+    if (Array.isArray(entries)) {
+      for (const entry of entries) {
+        if (!isArrayLike(entry)) continue;
+
+        const number = PhoneNumber.normalize(Text.first(entry['phone'], entry['jid']));
+
+        if (number === '') continue;
+
+        results[number] = entry['exists'] === true;
+
+        const jid = Text.of(entry['jid']);
+
+        if (jid !== '') ids[number] = jid;
+      }
+    }
+
+    return new NumberCheck(Waxum.NAME, results, ids, { 'contacts/check': body });
   }
 
   /**

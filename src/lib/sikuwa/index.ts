@@ -29,6 +29,7 @@
 
 export { Config, type ConfigOptions, type EnvResolver } from './config';
 export { Client, type ClientOptions, type ProviderConstructor } from './client';
+export { NumberCheck } from './number-check';
 export { Session, type SessionOptions } from './session';
 
 export {
@@ -48,6 +49,8 @@ export {
 export { Pacing, type PacingSpec } from './support/pacing';
 export { Throttle, type ThrottleSpec } from './support/throttle';
 export { Typing, type TypingSpec } from './support/typing';
+export { Rotation, type RotationSpec } from './support/rotation';
+export { Log, type LoggerLike } from './support/log';
 export { Presence } from './support/presence';
 export { PhoneNumber } from './support/phone-number';
 export { Text } from './support/text';

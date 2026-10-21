@@ -1,5 +1,7 @@
 import { isNumeric, toFloat, toInt, trimmedScalar, validateBoolean } from './internal/scalar';
+import type { LoggerLike } from './support/log';
 import { Pacing, type PacingSpec } from './support/pacing';
+import { Rotation, type RotationSpec } from './support/rotation';
 import { Throttle, type ThrottleSpec } from './support/throttle';
 import { Typing, type TypingSpec } from './support/typing';
 
@@ -26,10 +28,27 @@ export interface ConfigOptions {
   urls?: Record<string, string>;
   /** Token akun, khusus Fonnte Device API. */
   account_token?: string | null;
+  /** Daftar sesi per provider, mis. `{ OpenWA: ['s1', 's2'] }`. */
+  sessions?: Record<string, string[]>;
+  /** Daftar instance per provider, mis. `{ ApiMe: ['i1', 'i2'] }`. */
+  instances?: Record<string, string[]>;
   pacing?: PacingSpec | Pacing | null;
   typing?: TypingSpec | Typing | null;
   throttle?: ThrottleSpec | Throttle | null;
   retries?: string | number | null;
+  /**
+   * Logger opsional. Tidak ada kunci environment untuk ini: sebuah objek tidak
+   * bisa dibaca dari `.env`.
+   */
+  logger?: LoggerLike | null;
+  /** Periksa dulu nomor tujuan sebelum mengirim pesan teks. Bawaannya mati. */
+  check_numbers?: unknown;
+  /**
+   * Bagi satu batch ke beberapa gateway. Tiga bentuk diterima, karena
+   * tiga-tiganya wajar ditulis pemanggil: `true`, `{ enabled: true }`, atau
+   * `Rotation.fromConfig('1')`.
+   */
+  rotate?: Rotation | RotationSpec | string | boolean | null;
 }
 
 /**
@@ -46,8 +65,10 @@ export interface ConfigOptions {
  * Kunci yang dikenali: `WA_NOTIFICATION`, `WHATSAPP_PROVIDER`,
  * `WHATSAPP_TOKEN`, `WHATSAPP_TOKEN_<Provider>`, `WHATSAPP_URL`,
  * `WHATSAPP_URL_<Provider>`, `WHATSAPP_SESSION`, `WHATSAPP_SESSION_<Provider>`,
- * `WHATSAPP_INSTANCE`, `WHATSAPP_INSTANCE_<Provider>`,
+ * `WHATSAPP_SESSIONS_<Provider>`, `WHATSAPP_INSTANCE`,
+ * `WHATSAPP_INSTANCE_<Provider>`, `WHATSAPP_INSTANCES_<Provider>`,
  * `WHATSAPP_ACCOUNT_TOKEN`, `WHATSAPP_TIMEOUT`, `WHATSAPP_RETRIES`,
+ * `WHATSAPP_CHECK_NUMBERS`, `WHATSAPP_ROTATE`,
  * `WHATSAPP_PACING_CYCLE`,
  * `WHATSAPP_PACING_INTERVAL`, `WHATSAPP_PACING_LONG_CHARS`,
  * `WHATSAPP_PACING_LONG_FACTOR`, `WHATSAPP_TYPING`, `WHATSAPP_TYPING_SPEED`,
@@ -75,10 +96,15 @@ export class Config {
   private readonly headerMap: Record<string, string>;
   private readonly urlMap: Record<string, string>;
   private readonly accountTokenValue: string | null;
+  private readonly sessionsMap: Record<string, string[]>;
+  private readonly instancesMap: Record<string, string[]>;
   private readonly pacingOverride: Pacing | null;
   private readonly typingOverride: Typing | null;
   private readonly throttleOverride: Throttle | null;
   private readonly retriesOverride: number | null;
+  private readonly loggerValue: LoggerLike | null;
+  private readonly checkNumbersOverride: boolean | null;
+  private readonly rotateOverride: Rotation | null;
 
   constructor(options: ConfigOptions = {}) {
     this.explicitToken = options.token ?? null;
@@ -91,11 +117,19 @@ export class Config {
     this.headerMap = options.headers ?? {};
     this.urlMap = options.urls ?? {};
     this.accountTokenValue = options.account_token ?? null;
+    this.sessionsMap = options.sessions ?? {};
+    this.instancesMap = options.instances ?? {};
     this.pacingOverride = Config.pacingOption(options.pacing);
     this.typingOverride = Config.typingOption(options.typing);
     this.throttleOverride = Config.throttleOption(options.throttle);
     this.retriesOverride =
       options.retries === undefined || options.retries === null ? null : toInt(options.retries);
+    this.loggerValue = options.logger ?? null;
+    this.checkNumbersOverride =
+      options.check_numbers === undefined || options.check_numbers === null
+        ? null
+        : validateBoolean(options.check_numbers);
+    this.rotateOverride = Config.rotateOption(options.rotate);
   }
 
   /** Terima array opsi, instance Config, atau null. */
@@ -114,10 +148,15 @@ export class Config {
       headers: options.headers ?? {},
       urls: options.urls ?? {},
       account_token: options.account_token,
+      sessions: options.sessions ?? {},
+      instances: options.instances ?? {},
       pacing: options.pacing ?? null,
       typing: options.typing ?? null,
       throttle: options.throttle ?? null,
       retries: options.retries === undefined || options.retries === null ? null : options.retries,
+      logger: options.logger ?? null,
+      check_numbers: options.check_numbers ?? null,
+      rotate: options.rotate ?? null,
     });
   }
 
@@ -135,6 +174,8 @@ export class Config {
       typing: Config.typingFromEnv(),
       throttle: Config.throttleFromEnv(),
       retries: Config.retriesFromEnv(),
+      check_numbers: Config.checkNumbersFromEnv(),
+      rotate: Config.rotateFromEnv(),
     });
   }
 
@@ -230,6 +271,49 @@ export class Config {
     const value = Config.env('WHATSAPP_RETRIES');
 
     return value === null || !isNumeric(trimmedScalar(value)) ? null : toInt(trimmedScalar(value));
+  }
+
+  /**
+   * Saklar `WHATSAPP_CHECK_NUMBERS` dari environment.
+   *
+   * Dikumpulkan di satu tempat seperti {@link retriesFromEnv}, supaya dua jalur
+   * yang memakainya — {@link fromEnvironment} dan {@link checkNumbers} — tidak
+   * bisa berbeda diam-diam.
+   *
+   * Apa pun yang tidak dikenali berarti **mati**: kunci yang lupa ditulis atau
+   * salah tulis tidak boleh tiba-tiba menambah request ke jalur kirim.
+   */
+  private static checkNumbersFromEnv(): boolean {
+    const value = Config.env('WHATSAPP_CHECK_NUMBERS');
+
+    return value !== null && validateBoolean(value);
+  }
+
+  /**
+   * Rotasi gateway dari environment.
+   *
+   * Dikumpulkan di satu tempat seperti {@link checkNumbersFromEnv}, supaya dua
+   * jalur yang memakainya — {@link fromEnvironment} dan {@link rotate} — tidak
+   * bisa berbeda diam-diam.
+   */
+  private static rotateFromEnv(): Rotation {
+    return Rotation.fromConfig(Config.env('WHATSAPP_ROTATE'));
+  }
+
+  /**
+   * Terima opsi `rotate` dalam bentuk objek jadi, array, atau saklar mentah.
+   *
+   * Null bila pemanggil tidak mengirim apa pun, supaya {@link rotate} masih
+   * bisa jatuh ke environment.
+   */
+  private static rotateOption(value: Rotation | RotationSpec | string | boolean | null | undefined): Rotation | null {
+    if (value instanceof Rotation) return value;
+
+    if (value === null || value === undefined) return null;
+
+    if (typeof value === 'object') return Rotation.fromArray(value);
+
+    return Rotation.fromConfig(value);
   }
 
   /**
@@ -350,8 +434,87 @@ export class Config {
   }
 
   /**
-   * Id session efektif. Urutannya: kunci khusus provider, lalu nilai
-   * eksplisit, lalu `WHATSAPP_SESSION`.
+   * Daftar id sesi khusus satu provider: `WHATSAPP_SESSIONS_<Provider>`.
+   *
+   * Kunci jamak (plural) ini berisi daftar id sesi yang dipisah koma, untuk
+   * aplikasi yang mengelola beberapa sesi sekaligus di satu gateway — mis. satu
+   * OpenWA dengan tiga sesi untuk tiga departemen. Kunci tunggal
+   * {@link providerSession} menentukan sesi **aktif**; kunci jamak ini
+   * mendaftar semuanya yang dikenal aplikasi.
+   *
+   * Seperti {@link providerSession}, kunci ini tidak pernah jatuh ke kunci
+   * umum — tiap gateway punya daftarnya sendiri. Nilai eksplisit di konstruktor
+   * menang atas environment, sama seperti `tokens` dan `urls`.
+   */
+  providerSessions(provider: string): string[] {
+    const explicit = this.sessionsMap[provider];
+
+    if (explicit !== undefined) {
+      return explicit.filter((session) => typeof session === 'string' && session !== '');
+    }
+
+    const raw = Config.env(`WHATSAPP_SESSIONS_${provider}`);
+
+    return raw === null ? [] : splitList(raw);
+  }
+
+  /**
+   * Daftar sesi efektif. Urutannya: daftar khusus provider, lalu sesi tunggal
+   * dibungkus jadi array satu elemen.
+   *
+   * Mengembalikan daftar kosong bila tidak ada sesi yang dikonfigurasi. Dipakai
+   * bersama `listSessions()` untuk membandingkan sesi yang dikenal aplikasi
+   * dengan yang dikenal server.
+   */
+  sessions(provider?: string | null): string[] {
+    if (provider !== null && provider !== undefined) {
+      const list = this.providerSessions(provider);
+
+      if (list.length > 0) return list;
+    }
+
+    const active = this.session(provider);
+
+    return active !== '' ? [active] : [];
+  }
+
+  /**
+   * Daftar id instance khusus satu provider: `WHATSAPP_INSTANCES_<Provider>`.
+   *
+   * Kunci jamak untuk ApiMe dan Evolution API, sama seperti
+   * {@link providerSessions} untuk gateway berbasis sesi.
+   */
+  providerInstances(provider: string): string[] {
+    const explicit = this.instancesMap[provider];
+
+    if (explicit !== undefined) {
+      return explicit.filter((instance) => typeof instance === 'string' && instance !== '');
+    }
+
+    const raw = Config.env(`WHATSAPP_INSTANCES_${provider}`);
+
+    return raw === null ? [] : splitList(raw);
+  }
+
+  /**
+   * Daftar instance efektif. Urutannya: daftar khusus provider, lalu instance
+   * tunggal dibungkus jadi array satu elemen.
+   */
+  instances(provider?: string | null): string[] {
+    if (provider !== null && provider !== undefined) {
+      const list = this.providerInstances(provider);
+
+      if (list.length > 0) return list;
+    }
+
+    const active = this.instance(provider);
+
+    return active !== '' ? [active] : [];
+  }
+
+  /**
+   * Id session efektif. Urutannya: kunci khusus provider tunggal, lalu elemen
+   * pertama dari kunci jamak, lalu nilai eksplisit, lalu `WHATSAPP_SESSION`.
    *
    * Dipakai OpenWA, Wwebjs, dan Waxum. Provider yang tidak memakai session
    * (Fonnte, ApiMe, Evolution API, wuzapi) tetap bisa memanggil ini tanpa
@@ -361,8 +524,19 @@ export class Config {
     const specific =
       provider !== null && provider !== undefined ? this.providerSession(provider) : null;
 
+    if (specific !== null) return specific;
+
+    // Kalau kunci tunggal tidak diisi, ambil yang pertama dari daftar sesi
+    // jamak — itu yang paling sering dimaksud sebagai sesi aktif bawaan.
+    // Kunci tunggal tetap menang bila keduanya diisi, karena sesi aktif
+    // adalah pilihan eksplisit, bukan urutan dalam daftar.
+    if (provider !== null && provider !== undefined) {
+      const sessions = this.providerSessions(provider);
+
+      if (sessions.length > 0) return sessions[0];
+    }
+
     return (
-      specific ??
       (this.sessionId === null || this.sessionId === '' ? null : this.sessionId) ??
       Config.env('WHATSAPP_SESSION') ??
       ''
@@ -370,8 +544,9 @@ export class Config {
   }
 
   /**
-   * Id/nama instance efektif. Urutannya: kunci khusus provider, lalu nilai
-   * eksplisit, lalu `WHATSAPP_INSTANCE`.
+   * Id/nama instance efektif. Urutannya: kunci khusus provider tunggal, lalu
+   * elemen pertama dari kunci jamak, lalu nilai eksplisit, lalu
+   * `WHATSAPP_INSTANCE`.
    *
    * Dipakai ApiMe dan Evolution API.
    */
@@ -379,8 +554,17 @@ export class Config {
     const specific =
       provider !== null && provider !== undefined ? this.providerInstance(provider) : null;
 
+    if (specific !== null) return specific;
+
+    // Sama seperti session(): kunci jamak hanya menjadi sumber instance aktif
+    // bawaan bila kunci tunggal tidak diisi.
+    if (provider !== null && provider !== undefined) {
+      const instances = this.providerInstances(provider);
+
+      if (instances.length > 0) return instances[0];
+    }
+
     return (
-      specific ??
       (this.instanceId === null || this.instanceId === '' ? null : this.instanceId) ??
       Config.env('WHATSAPP_INSTANCE') ??
       ''
@@ -470,6 +654,67 @@ export class Config {
   }
 
   /**
+   * Logger opsional, atau null bila pemanggil tidak memasangnya.
+   *
+   * SDK ini sengaja **tidak** mencatat apa pun sendiri — ia hanya memakai
+   * logger kalau pemanggil memberikannya. Yang dicatat pun cuma kejadian yang
+   * tadinya senyap sama sekali: indikator "sedang mengetik" yang gagal
+   * ditampilkan, percobaan ulang setelah gateway menolak sementara, tujuan yang
+   * dilewati karena tidak terdaftar, dan rotasi yang tidak punya cukup
+   * kandidat. Semuanya tidak menggagalkan pengiriman, jadi tanpa logger pun
+   * pemanggil kehilangan informasi — bukan pesan.
+   *
+   * Bawaannya null, sehingga perilakunya sama seperti sebelum fitur ini ada.
+   */
+  logger(): LoggerLike | null {
+    return this.loggerValue;
+  }
+
+  /**
+   * Apakah nomor tujuan diperiksa dulu sebelum pesan teks dikirim.
+   *
+   * Menyalakannya berarti tiap `sendMessage()` didahului satu pemeriksaan ke
+   * gateway, dan tujuan yang **dipastikan** tidak terdaftar tidak ikut
+   * dikirimi pesan.
+   *
+   * Tiga hal yang disengaja:
+   *
+   * - **Bawaannya mati.** Pemeriksaan menambah request ke jalur kirim — di
+   *   OpenWA, ApiMe, dan Wwebjs satu request per nomor, berurutan — jadi ia
+   *   harus dinyalakan dengan sadar, sama seperti pacing dan pagar laju.
+   * - **Hanya yang dipastikan tidak terdaftar yang dilewati.** Nomor yang
+   *   tidak disebut jawabannya berarti "belum diperiksa", bukan "tidak ada";
+   *   melewatinya akan membuang pesan yang sebenarnya baik-baik saja.
+   * - **Pemeriksaan yang gagal tidak menahan pesan.** Bila request
+   *   pemeriksaannya sendiri gagal, pesannya tetap dikirim dan kegagalannya
+   *   dicatat ke logger — satu timeout tidak boleh menghentikan seluruh batch.
+   *
+   * Method ini mengembalikan **pengaturan**, bukan hasil pemeriksaan. Untuk
+   * memeriksa nomor, lihat `Client.checkNumbers()`.
+   */
+  checkNumbers(): boolean {
+    return this.checkNumbersOverride ?? Config.checkNumbersFromEnv();
+  }
+
+  /**
+   * Apakah satu batch pesan teks dibagi ke beberapa gateway sekaligus.
+   *
+   * Melengkapi mode `auto`, yang hanya mengundi **sekali per panggilan**: satu
+   * `send()` berisi seratus pesan tetap keluar lewat satu gateway saja, karena
+   * undiannya terjadi sebelum pesan pertama dikirim. Saat rotasi menyala, batch
+   * itu dibagi ke semua gateway yang punya `WHATSAPP_TOKEN_<Provider>`,
+   * bergiliran setelah urutannya diundi — lihat `Rotation.assign()`.
+   *
+   * Bawaannya mati, hanya berlaku untuk bentuk daftar minimal dua pesan, hanya
+   * untuk pesan teks, dan menuntut `provider = auto`.
+   *
+   * Method ini mengembalikan **pengaturan**, bukan hasil pembagiannya.
+   */
+  rotate(): Rotation {
+    return this.rotateOverride ?? Config.rotateFromEnv();
+  }
+
+  /**
    * Timeout request dalam detik. Nilai di luar 1–60 diabaikan supaya salah
    * tulis di .env tidak membuat request menggantung selamanya.
    */
@@ -527,10 +772,15 @@ export class Config {
       headers: this.headerMap,
       urls: this.urlMap,
       account_token: this.accountTokenValue,
+      sessions: this.sessionsMap,
+      instances: this.instancesMap,
       pacing: this.pacingOverride,
       typing: this.typingOverride,
       throttle: this.throttleOverride,
       retries: this.retriesOverride,
+      logger: this.loggerValue,
+      check_numbers: this.checkNumbersOverride,
+      rotate: this.rotateOverride,
     };
   }
 }
@@ -538,6 +788,20 @@ export class Config {
 /** `rtrim($url, '/')` PHP. */
 function rtrimSlashes(url: string): string {
   return url.replace(/\/+$/, '');
+}
+
+/**
+ * Pisah daftar yang dipisah koma: trim tiap elemen, buang yang kosong.
+ *
+ * Dipakai oleh {@link Config.providerSessions} dan
+ * {@link Config.providerInstances} — bentuk masukan yang sama (string dipisah
+ * koma) dan hasil yang sama (array bersih tanpa elemen kosong).
+ */
+function splitList(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part !== '');
 }
 
 /** Baca satu kunci `process.env`, dengan aman di runtime yang tidak punya. */

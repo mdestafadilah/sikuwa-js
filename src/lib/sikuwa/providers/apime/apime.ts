@@ -3,10 +3,12 @@ import type { MessageInput } from '../../contracts/whatsapp';
 import { ConfigurationException } from '../../exceptions';
 import type { HttpExecutor, MultipartPart } from '../../http/http-executor';
 import { isArrayLike, toScalarString } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import { Session } from '../../session';
 import type { JsonObject } from '../../support/envelope';
 import type { File } from '../../support/file';
 import type { Presence } from '../../support/presence';
+import { Text } from '../../support/text';
 import {
   AbstractProvider,
   type PlannedMessage,
@@ -128,6 +130,49 @@ export class ApiMe extends AbstractProvider {
       ),
       instanceId,
     );
+  }
+
+  /**
+   * Periksa nomor satu per satu: `POST /api/instances/{id}/whatsapp/check`.
+   *
+   * Body-nya `{phone}` — satu nomor per panggilan — dan balasannya dibungkus
+   * `{"data":{"results":[…]}}` berisi satu entri. Nomor yang tidak terdaftar
+   * dijawab `IsIn: false`; soket yang belum siap justru dibalas HTTP 503, dan
+   * itu bukan "tidak terdaftar" — karena itu ia tetap dilempar sebagai
+   * kegagalan, bukan dilaporkan sebagai `false`.
+   *
+   * Percobaan ulang dilakukan **per nomor**, sama seperti OpenWA: satu nomor =
+   * satu request, jadi mengulang seluruh daftar akan menanyakan ulang nomor
+   * yang sudah dijawab.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    const instanceId = this.requireConfigured(this.instanceId, 'WHATSAPP_INSTANCE');
+
+    const results: Record<string, boolean> = {};
+    const ids: Record<string, string> = {};
+    const raw: JsonObject[] = [];
+
+    for (const number of numbers) {
+      const body = await this.withRetry(() =>
+        this.postJson(
+          `${this.baseUrl}/api/instances/${encodeURIComponent(instanceId)}/whatsapp/check`,
+          { phone: number },
+        ),
+      );
+
+      raw.push(body);
+
+      const data = isArrayLike(body['data']) ? body['data'] : {};
+      const entry = firstEntry(data);
+
+      results[number] = entry['IsIn'] === true;
+
+      const jid = Text.of(entry['JID']);
+
+      if (jid !== '') ids[number] = jid;
+    }
+
+    return new NumberCheck(ApiMe.NAME, results, ids, raw);
   }
 
   /**
@@ -299,4 +344,26 @@ export class ApiMe extends AbstractProvider {
 
     return konteks === '' ? pesan : `${pesan} [${konteks}]`;
   }
+}
+
+/**
+ * Ambil satu entri hasil dari `data` milik ApiMe.
+ *
+ * Handler-nya membalas `{"data":{"results":[{…}]}}`, tetapi OpenAPI ApiMe tidak
+ * mendeklarasikan skema balasan sama sekali — jadi entri pertama dicari di
+ * `results` dulu, dan `data` itu sendiri dipakai bila ternyata jawabannya tidak
+ * dibungkus.
+ */
+function firstEntry(data: JsonObject): JsonObject {
+  const results = data['results'];
+
+  if (isArrayLike(results)) {
+    const entries = Array.isArray(results) ? results : Object.values(results);
+
+    for (const entry of entries) {
+      if (isArrayLike(entry)) return entry;
+    }
+  }
+
+  return data;
 }

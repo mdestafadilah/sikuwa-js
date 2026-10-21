@@ -3,6 +3,7 @@ import type { MessageInput } from '../../contracts/whatsapp';
 import { ConfigurationException } from '../../exceptions';
 import type { HttpExecutor } from '../../http/http-executor';
 import { isArrayLike } from '../../internal/scalar';
+import { NumberCheck } from '../../number-check';
 import { Session } from '../../session';
 import type { JsonObject } from '../../support/envelope';
 import type { File } from '../../support/file';
@@ -159,6 +160,39 @@ export class Wwebjs extends AbstractProvider {
     // Byte mentah, bukan `body`: PNG memuat byte di luar UTF-8, dan `body`
     // sudah melewati decoder UTF-8 sehingga byte itu tinggal U+FFFD.
     return WwebjsShowQr.fromImage(response.bytes, sessionId);
+  }
+
+  /**
+   * Periksa nomor satu per satu: `POST /client/isRegisteredUser/{sessionId}`.
+   *
+   * Body-nya `{number}` dan balasannya `{"success":true,"result":true}`. Sama
+   * seperti pengiriman, endpoint ini menuntut session yang sudah tersambung:
+   * middleware `sessionValidation` menolaknya dengan HTTP 404 selama session
+   * belum `CONNECTED`.
+   *
+   * Percobaan ulang dilakukan **per nomor**: satu nomor = satu request, jadi
+   * mengulang seluruh daftar akan menanyakan ulang nomor yang sudah dijawab.
+   */
+  protected async probeNumbers(numbers: string[]): Promise<NumberCheck> {
+    const sessionId = this.requireConfigured(this.sessionId, 'WHATSAPP_SESSION');
+
+    const results: Record<string, boolean> = {};
+    const raw: JsonObject[] = [];
+
+    for (const number of numbers) {
+      const body = await this.withRetry(() =>
+        this.postJson(
+          this.endpoint('client/isRegisteredUser/' + encodeURIComponent(sessionId)),
+          { number },
+        ),
+      );
+
+      raw.push(body);
+
+      results[number] = body['result'] === true;
+    }
+
+    return new NumberCheck(Wwebjs.NAME, results, {}, raw);
   }
 
   /**

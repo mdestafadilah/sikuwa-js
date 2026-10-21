@@ -1,3 +1,4 @@
+import type { NumberCheck } from '../number-check';
 import type { Session } from '../session';
 import type { PacingSpec } from '../support/pacing';
 import type { ThrottleSpec } from '../support/throttle';
@@ -130,6 +131,38 @@ export interface Whatsapp {
    * menghapusnya sendiri — dan panggilan ini ikut menunggu selama itu.
    */
   sendTyping(message: TypingRequest): Promise<string>;
+
+  /**
+   * Periksa nomor mana yang benar-benar terdaftar di WhatsApp.
+   *
+   * Ini satu-satunya cara SDK tahu apakah sebuah nomor bisa dihubungi:
+   * WhatsApp tidak memberi tahu sebelum pesannya benar-benar dikirim, dan
+   * menembak nomor yang tidak pernah ada adalah pemicu pemblokiran yang paling
+   * sering. Pakai hasilnya untuk menyaring daftar tujuan lebih dulu:
+   *
+   * ```ts
+   * const hasil = await client.checkNumbers(['081234567890', '089876543210']);
+   *
+   * for (const nomor of hasil.registered()) {
+   *   await client.send({ destination: nomor, message: 'Halo' });
+   * }
+   * ```
+   *
+   * Nomornya boleh ditulis dalam bentuk apa pun yang lazim — `0812…`,
+   * `+62 812…`, atau `62812…` — dan hasilnya selalu dikunci dengan bentuk
+   * internasional tanpa tanda plus. Karena itu tanyakan kembali lewat
+   * `NumberCheck.isRegistered()` alih-alih membaca hasilnya langsung: method
+   * itu menormalkan nomornya untuk Anda.
+   *
+   * Beberapa gateway bisa memeriksa seluruh daftar dalam satu panggilan
+   * (Evolution API, wuzapi, Waxum, Fonnte), sisanya satu nomor per panggilan —
+   * perbedaannya tidak terlihat pemanggil, tetapi menentukan berapa lama
+   * panggilan ini berlangsung.
+   *
+   * Nomor yang tidak disebut gateway tidak muncul di hasil: itu berarti belum
+   * terperiksa, bukan "tidak terdaftar".
+   */
+  checkNumbers(numbers: string | string[]): Promise<NumberCheck>;
 
   /**
    * Buat sesi/instance baru di gateway.
